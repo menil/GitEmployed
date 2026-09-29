@@ -39,6 +39,10 @@ GMAIL_ENV = {
     "GMAIL_REFRESH_TOKEN": "refresh-token",
 }
 
+# Fixed reference timestamp for hermetic orchestration tests, matching
+# the static dates used in synthetic message fixtures (e.g. make_message).
+_FIXED_TEST_NOW = datetime(2026, 9, 19, 12, 0, tzinfo=UTC)
+
 
 def gmail_settings(**overrides: object) -> Settings:
     """`sample_settings()` extended with an enabled Gmail config."""
@@ -1053,9 +1057,14 @@ def _run_full_sync(
     message_ids: list[str],
     gh: FakeGmailGitHubClient | None = None,
     gmail_client: FakeGmailClient | None = None,
+    now: datetime = _FIXED_TEST_NOW,
 ) -> tuple[dict, list[list[str]]]:
     """Run a full `run_sync` pass with git operations faked, returning the
-    written cursor JSON and every `run_git` call made (in order)."""
+    written cursor JSON and every `run_git` call made (in order).
+
+    Defaults `now` to `_FIXED_TEST_NOW` so pruning and staleness checks
+    remain deterministic regardless of wall-clock time.
+    """
     messages = {
         message_id: make_message(message_id=message_id, authentic=False)
         for message_id in message_ids
@@ -1086,6 +1095,7 @@ def _run_full_sync(
             llm_client=MagicMock(),
             settings=sample_settings(),
             resume=sample_resume(),
+            now=now,
         )
 
     state_file = tmp_path / gmail_sync.STATE_FILE_REL_PATH
@@ -1153,6 +1163,7 @@ def test_run_sync_resolves_label_and_lists_messages_with_configured_params(
             llm_client=MagicMock(),
             settings=sample_settings(),
             resume=sample_resume(),
+            now=_FIXED_TEST_NOW,
         )
 
     assert gmail_client.resolve_calls == ["GitEmployed"]
@@ -1203,6 +1214,7 @@ def test_run_sync_already_processed_message_has_zero_side_effects(
             llm_client=MagicMock(),
             settings=sample_settings(),
             resume=sample_resume(),
+            now=_FIXED_TEST_NOW,
         )
 
     assert gh.posted_comments == []
