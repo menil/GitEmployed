@@ -33,6 +33,22 @@ def load_settings(path: str | pathlib.Path) -> Settings:
     return Settings.from_dict(data)
 
 
+def parse_resume_yaml(yaml_content: str) -> Resume:
+    """Parse resume data from a YAML string.
+
+    Raises ValidationError if YAML parsing or schema validation fails.
+    """
+    try:
+        data = yaml.safe_load(yaml_content)
+    except yaml.YAMLError as e:
+        raise ValidationError(f"Invalid YAML syntax in resume: {e}") from e
+
+    if not isinstance(data, dict):
+        raise ValidationError("Resume YAML content must represent a dictionary.")
+
+    return Resume.from_dict(data)
+
+
 def load_resume(path: str | pathlib.Path) -> Resume:
     """Load resume data from a YAML file.
 
@@ -44,17 +60,11 @@ def load_resume(path: str | pathlib.Path) -> Resume:
         raise FileNotFoundError(f"Resume file not found: {file_path}")
 
     try:
-        with file_path.open(encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-    except yaml.YAMLError as e:
-        raise ValidationError(f"Invalid YAML syntax in resume: {e}") from e
+        content = file_path.read_text(encoding="utf-8")
     except Exception as e:
         raise ValidationError(f"Failed to read resume file: {e}") from e
 
-    if not isinstance(data, dict):
-        raise ValidationError("Resume YAML content must represent a dictionary.")
-
-    return Resume.from_dict(data)
+    return parse_resume_yaml(content)
 
 
 def render_resume_yaml(resume: Resume) -> str:
