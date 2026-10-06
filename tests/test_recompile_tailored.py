@@ -168,3 +168,112 @@ def test_main_cli_success(tmp_path: pathlib.Path) -> None:
             base_branch="main",
             dry_run=True,
         )
+
+
+def test_build_update_comment() -> None:
+    """Test building markdown update comment."""
+    from gitemployed.cli.recompile_tailored import build_update_comment
+
+    comment = build_update_comment(
+        repo="owner/repo",
+        branch_name="applications/swe-google-12345",
+        yaml_rel_path="resumes/resume.yaml",
+        pdf_filename="jane_doe_resume.pdf",
+        diff_filename="jane_doe_resume_diff.pdf",
+        diff_generated=True,
+        apply_url="https://jobs.example.com/apply",
+        inline_diff="<details><summary>Diff</summary></details>",
+    )
+    assert "### Tailored Resume Updated" in comment
+    assert (
+        "[applications/swe-google-12345](https://github.com/owner/repo/tree/applications/swe-google-12345)"
+        in comment
+    )
+    assert (
+        "[View/Download PDF](https://github.com/owner/repo/blob/applications/swe-google-12345/resumes/jane_doe_resume.pdf)"
+        in comment
+    )
+    assert (
+        "[View Visual Diff PDF](https://github.com/owner/repo/blob/applications/swe-google-12345/resumes/jane_doe_resume_diff.pdf)"
+        in comment
+    )
+    assert (
+        '<a href="https://jobs.example.com/apply" target="_blank">Link to Posting</a>'
+        in comment
+    )
+    assert "<details><summary>Diff</summary></details>" in comment
+
+
+def test_post_recompile_comment_found(tmp_path: pathlib.Path) -> None:
+    """Test post_recompile_comment posts comment when issue is found."""
+    from gitemployed.cli.recompile_tailored import (
+        RecompileResult,
+        post_recompile_comment,
+    )
+    from gitemployed.github_client import GitHubClient
+
+    mock_gh = mock.MagicMock(spec=GitHubClient)
+    mock_gh.repo = "owner/repo"
+    mock_gh.find_issue_by_branch.return_value = {
+        "number": 101,
+        "title": "[Google] SWE",
+        "body": "**Apply URL:** https://example.com/job",
+    }
+
+    res = RecompileResult(
+        diff_generated=True,
+        candidate_name="Jane Doe",
+        yaml_filename="resume.yaml",
+        json_filename="jane_doe_resume.json",
+        pdf_filename="jane_doe_resume.pdf",
+        diff_filename="jane_doe_resume_diff.pdf",
+        committed=True,
+    )
+
+    with mock.patch(
+        "gitemployed.cli.recompile_tailored._build_inline_diff_section",
+        return_value="<diff-section>",
+    ):
+        posted = post_recompile_comment(
+            repo_path=tmp_path,
+            branch_name="applications/swe-google-12345",
+            recompile_result=res,
+            gh_client=mock_gh,
+        )
+
+    assert posted is True
+    mock_gh.post_comment.assert_called_once()
+    args, _ = mock_gh.post_comment.call_args
+    assert args[0] == 101
+    assert "### Tailored Resume Updated" in args[1]
+
+
+def test_post_recompile_comment_not_found(tmp_path: pathlib.Path) -> None:
+    """Test post_recompile_comment returns False when no issue matches branch."""
+    from gitemployed.cli.recompile_tailored import (
+        RecompileResult,
+        post_recompile_comment,
+    )
+    from gitemployed.github_client import GitHubClient
+
+    mock_gh = mock.MagicMock(spec=GitHubClient)
+    mock_gh.find_issue_by_branch.return_value = None
+
+    res = RecompileResult(
+        diff_generated=False,
+        candidate_name=None,
+        yaml_filename="resume.yaml",
+        json_filename="resume.json",
+        pdf_filename="resume.pdf",
+        diff_filename="resume_diff.pdf",
+        committed=False,
+    )
+
+    posted = post_recompile_comment(
+        repo_path=tmp_path,
+        branch_name="applications/unknown-12345",
+        recompile_result=res,
+        gh_client=mock_gh,
+    )
+    assert posted is False
+    mock_gh.post_comment.assert_not_called()

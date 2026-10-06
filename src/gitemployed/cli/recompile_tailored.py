@@ -1,17 +1,23 @@
 """Coordinator for recompiling tailored resumes on manual branch commits."""
 
 import argparse
+import hashlib
 import logging
+import os
 import pathlib
 import sys
 import tempfile
 from dataclasses import dataclass
 
+from gitemployed.assistant import STATUS_CONFIRMATION_MARKER
 from gitemployed.cli import add_repo_path_argument, resolve_repo_path, setup_logging
 from gitemployed.cli.triage import (
     _DEFAULT_RESUME_THEME,
+    _build_inline_diff_section,
+    _sanitize_apply_url,
     get_resume_filenames,
     get_resume_prefix,
+    parse_job_details,
 )
 from gitemployed.git_ops import (
     GitOpsError,
@@ -19,6 +25,7 @@ from gitemployed.git_ops import (
     push_branch,
     run_git,
 )
+from gitemployed.github_client import GitHubClient
 from gitemployed.loader import (
     load_resume,
     load_settings,
@@ -229,6 +236,131 @@ def recompile_and_commit(
     )
 
 
+def build_update_comment(
+    repo: str,
+    branch_name: str,
+    yaml_rel_path: str,
+    pdf_filename: str,
+    diff_filename: str,
+    diff_generated: bool,
+    apply_url: str = "",
+    inline_diff: str = "",
+) -> str:
+    """Build the markdown body for the update comment posted to the issue.
+
+    Args:
+        repo: Repository name (e.g. 'owner/repo').
+        branch_name: Target application branch name.
+        yaml_rel_path: Relative path of the resume YAML file.
+        pdf_filename: Filename of the compiled PDF.
+        diff_filename: Filename of the visual diff PDF.
+        diff_generated: Whether the visual diff PDF was generated.
+        apply_url: Optional apply URL for the job posting.
+        inline_diff: Optional collapsible markdown diff section.
+
+    Returns:
+        Formatted markdown comment string.
+    """
+    yaml_hash = hashlib.sha256(yaml_rel_path.encode("utf-8")).hexdigest()
+    pdf_blob_url = (
+        f"https://github.com/{repo}/blob/{branch_name}/resumes/{pdf_filename}"
+    )
+    diff_blob_url = (
+        f"https://github.com/{repo}/blob/{branch_name}/resumes/{diff_filename}"
+    )
+
+    lines = [
+        STATUS_CONFIRMATION_MARKER,
+        "",
+        "### Tailored Resume Updated",
+        f"- **Application Branch:** [{branch_name}](https://github.com/{repo}/tree/{branch_name})",
+        (
+            f"- **Resume YAML Diff:** [Compare Changes]"
+            f"(https://github.com/{repo}/compare/main...{branch_name}#diff-{yaml_hash})"
+        ),
+        f"- **Tailored Resume PDF:** [View/Download PDF]({pdf_blob_url})",
+    ]
+    if diff_generated:
+        lines.append(
+            f"- **Visual Resume Diff:** [View Visual Diff PDF]({diff_blob_url})"
+        )
+
+    sanitized_url = _sanitize_apply_url(apply_url)
+    if sanitized_url:
+        lines.append(
+            f'- **Apply URL:** <a href="{sanitized_url}" '
+            f'target="_blank">Link to Posting</a>'
+        )
+
+    body = "\n".join(lines)
+    if inline_diff:
+        body += f"\n\n{inline_diff}"
+    return body
+
+
+def post_recompile_comment(
+    repo_path: pathlib.Path,
+    branch_name: str,
+    recompile_result: RecompileResult,
+    gh_client: GitHubClient,
+) -> bool:
+    """Find the associated issue and post a comment with updated artifact links.
+
+    Args:
+        repo_path: Path to the git repository.
+        branch_name: The branch name being recompiled.
+        recompile_result: Metadata result from recompile_and_commit.
+        gh_client: GitHub client instance.
+
+    Returns:
+        True if comment was posted to a matching issue, False otherwise.
+    """
+    logger.info(
+        "Searching for issue associated with branch: %s", mask_value(branch_name)
+    )
+    issue = gh_client.find_issue_by_branch(branch_name)
+    if not issue:
+        logger.warning(
+            "No issue found matching branch '%s'; skipping comment posting.",
+            mask_value(branch_name),
+        )
+        return False
+
+    issue_number = issue.get("number")
+    if not issue_number:
+        logger.warning("Matched issue payload missing 'number'; skipping comment.")
+        return False
+
+    details = parse_job_details(issue.get("body", ""), issue.get("title", ""))
+    apply_url = details.get("apply_url", "")
+
+    yaml_rel_path = f"resumes/{recompile_result.yaml_filename}"
+    inline_diff = _build_inline_diff_section(repo_path, branch_name, yaml_rel_path)
+
+    comment_body = build_update_comment(
+        repo=gh_client.repo,
+        branch_name=branch_name,
+        yaml_rel_path=yaml_rel_path,
+        pdf_filename=recompile_result.pdf_filename,
+        diff_filename=recompile_result.diff_filename,
+        diff_generated=recompile_result.diff_generated,
+        apply_url=apply_url,
+        inline_diff=inline_diff,
+    )
+
+    try:
+        gh_client.post_comment(issue_number, comment_body)
+        logger.info("Posted update comment to issue #%d", issue_number)
+        return True
+    except Exception as e:
+        logger.warning(
+            "Failed to post update comment to issue #%d: %s",
+            issue_number,
+            e,
+        )
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint for recompiling tailored resume on commit."""
     parser = argparse.ArgumentParser(
@@ -287,6 +419,26 @@ def main(argv: list[str] | None = None) -> int:
             res.diff_generated,
             res.committed,
         )
+
+        if not args.dry_run and res.committed:
+            token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_PAT")
+            repo = os.environ.get("GITHUB_REPOSITORY")
+            if token and repo:
+                try:
+                    gh_client = GitHubClient(token=token, repo=repo)
+                    post_recompile_comment(
+                        repo_path=repo_path,
+                        branch_name=branch_name,
+                        recompile_result=res,
+                        gh_client=gh_client,
+                    )
+                except Exception as comment_err:
+                    logger.warning("Failed to post comment to issue: %s", comment_err)
+            else:
+                logger.info(
+                    "GITHUB_TOKEN or GITHUB_REPOSITORY unset; skipping issue comment."
+                )
+
         return EXIT_SUCCESS
     except Exception as e:
         logger.error("Failed to recompile tailored resume: %s", e)
