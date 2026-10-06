@@ -311,6 +311,11 @@ def compile_resume_pdf(
     except (KeyError, PermissionError, OSError):
         output_pdf_path.parent.chmod(0o777)
 
+    # If the output PDF already exists (e.g. checked out from a previous commit
+    # owned by root/runner with read-only permissions for other users), remove it
+    # so _RENDER_USER can create and write the new file without EACCES.
+    output_pdf_path.unlink(missing_ok=True)
+
     # NOT `bunx resumed export`: bunx re-resolves resumed into an isolated
     # per-invocation cache on every call and cannot see the globally-
     # installed theme/puppeteer siblings baked into the image, so it fails

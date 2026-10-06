@@ -847,3 +847,18 @@ def test_generate_pdf_diff_fatal_error(tmp_path) -> None:
         ),
     ):
         generate_pdf_diff(base_pdf, tailored_pdf, out_pdf)
+
+
+def test_compile_resume_pdf_removes_existing_output_file(tmp_path) -> None:
+    """Verify compile_resume_pdf removes existing PDF before invoking resumed."""
+    json_path = tmp_path / "resume.json"
+    json_path.write_text("{}", encoding="utf-8")
+    out_pdf = tmp_path / "resume.pdf"
+    out_pdf.write_bytes(b"%PDF-old")
+
+    with mock.patch(
+        "gitemployed.renderer.subprocess.run",
+        return_value=_fake_completed_process(returncode=0),
+    ):
+        compile_resume_pdf(json_path, "theme", out_pdf)
+        assert not out_pdf.exists()
