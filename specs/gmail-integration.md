@@ -160,27 +160,13 @@ shared cursor file.
 
 **Job body:**
 
-1. Checkout.
-2. Set Badge (Running) — `update_badge.py "Gmail Sync" "running" "yellow"
-   "gmail-sync-status.json"`, mirroring the badge convention every other
-   template workflow already follows (`respond-issue.yml`, `scrape-jobs.yml`,
-   etc.) — flagged as missing in review; every documented failure mode below
-   (fatal config error, quota exit, cursor-push failure) was otherwise only
-   visible by opening the Actions tab.
-3. `python -m jobgitops.cli.gmail_sync`.
-4. The script's **first action** is to load `config/settings.yaml` and check
-   `settings.gmail`:
-   - **Absent, or `enabled: false`:** log one line and exit `0` immediately.
-     This is what makes the feature safe to ship in every synced template —
-     a repo that hasn't opted in pays a fraction of a second per hour and
-     nothing else.
-   - **`enabled: true` but any of `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` /
-     `GMAIL_REFRESH_TOKEN` missing:** this is a **fatal configuration error**
-     (exit `1`, workflow shows red in the Actions tab) — the same treatment
-     as a missing LLM key today (see README Troubleshooting). Opting in
-     implies the manual OAuth setup (§8) was supposed to happen; silently
-     no-op-ing here would hide a broken setup instead of surfacing it.
-5. Update Badge (Passed/Failed), mirroring the same pattern.
+1. **Check job (`check`):** runs on `ubuntu-latest` without pulling the container image, performing a sparse-checkout of `config/settings.yaml` to verify `settings.gmail.enabled`. When absent or `enabled: false`, it logs and exits `0` in seconds, skipping the heavy `sync` job.
+2. **Sync job (`sync`):** runs only when `needs.check.outputs.enabled == 'true'` (`container: image: ghcr.io/menil/gitemployed:latest`):
+   a. Checkout.
+   b. Set Badge (Running) — `update_badge.py "Gmail Sync" "running" "yellow" "gmail-sync-status.json"`, mirroring the badge convention every other template workflow already follows (`respond-issue.yml`, `scrape-jobs.yml`, etc.).
+   c. `python -m gitemployed.cli.gmail_sync`.
+   d. The script verifies that required secrets (`GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` / `GMAIL_REFRESH_TOKEN`) are present; missing secrets raise a **fatal configuration error** (exit `1`, workflow shows red in the Actions tab).
+   e. Update Badge (Passed/Failed), mirroring the same pattern.
 
 **Environment:** `GITHUB_TOKEN` (`secrets.GH_PAT || secrets.GITHUB_TOKEN`),
 `GITHUB_REPOSITORY`, the existing LLM provider secrets/vars
@@ -918,12 +904,9 @@ validate`). New tests:
   `gmail_client.py`) ships via the shared container image; the workflow file
   reaches a given user's repo only when they run `scripts/sync-template.sh`
   — these two channels update independently. `gmail-sync.yml` and its
-  corresponding engine code must ship in the same release, never split
-  across two: if the workflow file reached a synced repo before the engine
-  code reached the `:latest` container image tag, `python -m
-  jobgitops.cli.gmail_sync` would hit an import/attribute error instead of
-  the clean "log one line and exit 0" this spec promises for the
-  disabled/not-yet-enabled case.
+  corresponding engine code ship together in GitEmployed releases.
+  Repositories without `gmail.enabled: true` skip the `sync` container
+  job entirely via the lightweight `check` job.
 - No changes to `LIFECYCLE_LABELS`, `STATUS_LABELS`, `CLOSURE_LABELS`, or any
   existing workflow's trigger. No label-sync-workflow (`sync-labels.yml`)
   changes are needed since no new labels are introduced.
