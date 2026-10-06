@@ -5,6 +5,7 @@ from unittest import mock
 
 import pytest
 
+from gitemployed.assistant import STATUS_CONFIRMATION_MARKER
 from gitemployed.cli.recompile_tailored import (
     _load_base_resume,
     main,
@@ -39,6 +40,26 @@ def test_load_base_resume_success(tmp_path: pathlib.Path) -> None:
         mock_git.assert_called_once_with(
             ["show", "main:resumes/resume.yaml"], cwd=tmp_path
         )
+
+
+def test_load_base_resume_fallback_to_origin(tmp_path: pathlib.Path) -> None:
+    """Test loading base resume falls back to origin/main when main fails."""
+    yaml_text = "basics:\n  name: Origin Jane\n"
+
+    def fake_run_git(args: list[str], cwd: pathlib.Path) -> str:
+        if args[1] == "main:resumes/resume.yaml":
+            raise GitOpsError("unknown revision main")
+        if args[1] == "origin/main:resumes/resume.yaml":
+            return yaml_text
+        return ""
+
+    with mock.patch(
+        "gitemployed.cli.recompile_tailored.run_git", side_effect=fake_run_git
+    ):
+        res = _load_base_resume(tmp_path, base_branch="main")
+        assert res is not None
+        assert res.basics is not None
+        assert res.basics.name == "Origin Jane"
 
 
 def test_load_base_resume_failure(tmp_path: pathlib.Path) -> None:
@@ -184,6 +205,7 @@ def test_build_update_comment() -> None:
         apply_url="https://jobs.example.com/apply",
         inline_diff="<details><summary>Diff</summary></details>",
     )
+    assert STATUS_CONFIRMATION_MARKER in comment
     assert "### Tailored Resume Updated" in comment
     assert (
         "[applications/swe-google-12345](https://github.com/owner/repo/tree/applications/swe-google-12345)"
@@ -248,6 +270,46 @@ def test_post_recompile_comment_found(tmp_path: pathlib.Path) -> None:
     assert "### Tailored Resume Updated" in args[1]
 
 
+def test_post_recompile_comment_post_error(tmp_path: pathlib.Path) -> None:
+    """Test post_recompile_comment handles post_comment exception gracefully."""
+    from gitemployed.cli.recompile_tailored import (
+        RecompileResult,
+        post_recompile_comment,
+    )
+    from gitemployed.github_client import GitHubClient
+
+    mock_gh = mock.MagicMock(spec=GitHubClient)
+    mock_gh.repo = "owner/repo"
+    mock_gh.find_issue_by_branch.return_value = {
+        "number": 101,
+        "title": "[Google] SWE",
+        "body": "**Apply URL:** https://example.com/job",
+    }
+    mock_gh.post_comment.side_effect = RuntimeError("network timeout")
+
+    res = RecompileResult(
+        diff_generated=True,
+        candidate_name="Jane Doe",
+        yaml_filename="resume.yaml",
+        json_filename="jane_doe_resume.json",
+        pdf_filename="jane_doe_resume.pdf",
+        diff_filename="jane_doe_resume_diff.pdf",
+        committed=True,
+    )
+
+    with mock.patch(
+        "gitemployed.cli.recompile_tailored._build_inline_diff_section",
+        return_value="",
+    ):
+        posted = post_recompile_comment(
+            repo_path=tmp_path,
+            branch_name="applications/swe-google-12345",
+            recompile_result=res,
+            gh_client=mock_gh,
+        )
+        assert posted is False
+
+
 def test_post_recompile_comment_not_found(tmp_path: pathlib.Path) -> None:
     """Test post_recompile_comment returns False when no issue matches branch."""
     from gitemployed.cli.recompile_tailored import (
@@ -296,7 +358,10 @@ def test_recompile_tailored_workflow_file_valid() -> None:
         data = yaml.safe_load(f)
 
     assert data["name"] == "Recompile Tailored Resume"
-    triggers = data.get("on") or data.get(True)
+    # PyYAML parses unquoted 'on:' as boolean True (YAML 1.1 spec).
+    # Check string 'on' key first, falling back to boolean True for
+    # PyYAML compatibility.
+    triggers = data.get("on") if "on" in data else data.get(True, {})
     assert triggers is not None
     assert "push" in triggers
     assert "applications/**" in triggers["push"]["branches"]
@@ -309,3 +374,132 @@ def test_recompile_tailored_workflow_file_valid() -> None:
     steps = job["steps"]
     step_runs = [s.get("run", "") for s in steps if "run" in s]
     assert any("gitemployed.cli.recompile_tailored" in r for r in step_runs)
+
+
+def test_main_cli_inferred_branch_failure(tmp_path: pathlib.Path) -> None:
+    """Test CLI fails when branch is omitted and git rev-parse fails."""
+    with mock.patch(
+        "gitemployed.cli.recompile_tailored.run_git",
+        side_effect=GitOpsError("rev-parse failed"),
+    ):
+        ret = main(["--repo-path", str(tmp_path)])
+        assert ret == 1
+
+
+def test_main_cli_recompile_exception(tmp_path: pathlib.Path) -> None:
+    """Test CLI handles recompile exception gracefully returning EXIT_ERROR."""
+    with (
+        mock.patch(
+            "gitemployed.cli.recompile_tailored.recompile_and_commit",
+            side_effect=RuntimeError("compilation boom"),
+        ),
+    ):
+        ret = main(["--repo-path", str(tmp_path), "--branch", "applications/b"])
+        assert ret == 1
+
+
+def test_main_cli_comment_posting_with_env(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test CLI posts comment when GITHUB_TOKEN and GITHUB_REPOSITORY are set."""
+    monkeypatch.setenv("GITHUB_TOKEN", "mock-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+    mock_res = mock.MagicMock(diff_generated=True, committed=True)
+    with (
+        mock.patch(
+            "gitemployed.cli.recompile_tailored.recompile_and_commit",
+            return_value=mock_res,
+        ),
+        mock.patch(
+            "gitemployed.cli.recompile_tailored.post_recompile_comment"
+        ) as mock_post,
+    ):
+        ret = main(["--repo-path", str(tmp_path), "--branch", "applications/b"])
+        assert ret == 0
+        mock_post.assert_called_once()
+
+
+def test_main_cli_head_detached_branch_failure(tmp_path: pathlib.Path) -> None:
+    """Test CLI fails when branch is omitted and HEAD is detached ('HEAD')."""
+    with mock.patch(
+        "gitemployed.cli.recompile_tailored.run_git",
+        return_value="HEAD",
+    ):
+        ret = main(["--repo-path", str(tmp_path)])
+        assert ret == 1
+
+
+def test_main_cli_comment_skipped_when_not_committed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test CLI skips posting comment when nothing was committed."""
+    monkeypatch.setenv("GITHUB_TOKEN", "mock-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+    mock_res = mock.MagicMock(diff_generated=True, committed=False)
+    with (
+        mock.patch(
+            "gitemployed.cli.recompile_tailored.recompile_and_commit",
+            return_value=mock_res,
+        ),
+        mock.patch(
+            "gitemployed.cli.recompile_tailored.post_recompile_comment"
+        ) as mock_post,
+    ):
+        ret = main(["--repo-path", str(tmp_path), "--branch", "applications/b"])
+        assert ret == 0
+        mock_post.assert_not_called()
+
+
+@mock.patch("gitemployed.cli.recompile_tailored.push_branch")
+@mock.patch("gitemployed.cli.recompile_tailored.generate_pdf_diff")
+@mock.patch("gitemployed.cli.recompile_tailored.compile_resume")
+@mock.patch(
+    "gitemployed.cli.recompile_tailored.ensure_theme_installed", return_value="theme"
+)
+@mock.patch("gitemployed.cli.recompile_tailored.run_git")
+def test_recompile_and_commit_legacy_cleanup(
+    mock_run_git: mock.MagicMock,
+    mock_theme: mock.MagicMock,
+    mock_compile: mock.MagicMock,
+    mock_pdf_diff: mock.MagicMock,
+    mock_push: mock.MagicMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Test legacy files are removed when candidate prefix is present."""
+    resumes_dir = tmp_path / "resumes"
+    resumes_dir.mkdir(parents=True)
+    yaml_path = resumes_dir / "resume.yaml"
+    yaml_path.write_text("basics:\n  name: Jane Doe\n", encoding="utf-8")
+
+    # Create legacy files
+    (resumes_dir / "resume.json").write_text("{}", encoding="utf-8")
+    (resumes_dir / "resume.pdf").write_text("dummy pdf", encoding="utf-8")
+    (resumes_dir / "jane_doe_resume.yaml").write_text("dummy", encoding="utf-8")
+
+    def fake_run_git(args: list[str], cwd: pathlib.Path) -> str:
+        if args[0] == "show":
+            return "basics:\n  name: Base\n"
+        if args[0] == "diff":
+            return "resumes/resume.json\n"
+        return ""
+
+    mock_run_git.side_effect = fake_run_git
+
+    res = recompile_and_commit(
+        repo_path=tmp_path,
+        branch_name="applications/jane-swe-12345",
+        base_branch="main",
+        dry_run=False,
+    )
+
+    assert not (resumes_dir / "resume.json").exists()
+    assert not (resumes_dir / "resume.pdf").exists()
+    assert not (resumes_dir / "jane_doe_resume.yaml").exists()
+    assert res.candidate_name == "Jane Doe"
+    assert res.diff_generated is True
+    assert res.committed is True
+    mock_compile.assert_called()
+    mock_pdf_diff.assert_called_once()
+    mock_push.assert_called_once_with(tmp_path, "applications/jane-swe-12345")
