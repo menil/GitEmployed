@@ -277,3 +277,35 @@ def test_post_recompile_comment_not_found(tmp_path: pathlib.Path) -> None:
     )
     assert posted is False
     mock_gh.post_comment.assert_not_called()
+
+
+def test_recompile_tailored_workflow_file_valid() -> None:
+    """Verify that template workflow file is valid and configured correctly."""
+    import yaml
+
+    workflow_path = (
+        pathlib.Path(__file__).parent.parent
+        / "template"
+        / ".github"
+        / "workflows"
+        / "recompile-tailored-resume.yml"
+    )
+    assert workflow_path.is_file(), f"Workflow file not found: {workflow_path}"
+
+    with workflow_path.open(encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    assert data["name"] == "Recompile Tailored Resume"
+    triggers = data.get("on") or data.get(True)
+    assert triggers is not None
+    assert "push" in triggers
+    assert "applications/**" in triggers["push"]["branches"]
+    assert "resumes/resume.yaml" in triggers["push"]["paths"]
+    assert data["permissions"]["contents"] == "write"
+    assert data["permissions"]["issues"] == "write"
+    assert "recompile" in data["jobs"]
+    job = data["jobs"]["recompile"]
+    assert "ghcr.io/menil/gitemployed" in job["container"]["image"]
+    steps = job["steps"]
+    step_runs = [s.get("run", "") for s in steps if "run" in s]
+    assert any("gitemployed.cli.recompile_tailored" in r for r in step_runs)
