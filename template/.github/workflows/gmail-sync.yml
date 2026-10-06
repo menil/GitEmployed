@@ -14,7 +14,34 @@ permissions:
   issues: write
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check-enabled.outputs.enabled }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            config/settings.yaml
+
+      - name: Check if Gmail Sync is Enabled
+        id: check-enabled
+        run: |
+          if [ -f config/settings.yaml ]; then
+            ENABLED=$(yq '.gmail.enabled // false' config/settings.yaml 2>/dev/null || echo "false")
+            if [ "$ENABLED" = "true" ]; then
+              echo "Gmail Sync is enabled."
+              echo "enabled=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "Gmail integration not configured or disabled; skipping sync."
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+
   sync:
+    needs: check
+    if: needs.check.outputs.enabled == 'true'
     timeout-minutes: 15
     runs-on: ubuntu-latest
     container:

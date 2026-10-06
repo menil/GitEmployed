@@ -1511,3 +1511,42 @@ def test_run_sync_raises_fatal_error_when_label_missing(tmp_path: Path) -> None:
             settings=sample_settings(),
             resume=sample_resume(),
         )
+
+
+def test_gmail_sync_workflow_file_valid() -> None:
+    """Verify that template/gmail-sync.yml is valid YAML and configured with
+    the lightweight check job gating the containerized sync job."""
+    import yaml
+
+    workflow_path = (
+        Path(__file__).parent.parent
+        / "template"
+        / ".github"
+        / "workflows"
+        / "gmail-sync.yml"
+    )
+    assert workflow_path.is_file(), f"Workflow file not found: {workflow_path}"
+
+    with workflow_path.open(encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    assert data["name"] == "Gmail Sync"
+    triggers = data.get("on") if "on" in data else data.get(True, {})
+    assert triggers is not None
+    assert "schedule" in triggers
+    assert "workflow_dispatch" in triggers
+
+    assert "check" in data["jobs"]
+    assert "sync" in data["jobs"]
+
+    check_job = data["jobs"]["check"]
+    assert check_job["runs-on"] == "ubuntu-latest"
+    assert "container" not in check_job
+    assert (
+        check_job["outputs"]["enabled"] == "${{ steps.check-enabled.outputs.enabled }}"
+    )
+
+    sync_job = data["jobs"]["sync"]
+    assert sync_job["needs"] == "check"
+    assert sync_job["if"] == "needs.check.outputs.enabled == 'true'"
+    assert "ghcr.io/menil/gitemployed" in sync_job["container"]["image"]
