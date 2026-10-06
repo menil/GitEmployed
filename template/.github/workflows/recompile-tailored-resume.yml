@@ -1,0 +1,38 @@
+name: Recompile Tailored Resume
+
+on:
+  push:
+    branches:
+      - 'applications/**'
+    paths:
+      - 'resumes/resume.yaml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  recompile:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/menil/gitemployed:latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Recompile Tailored Resume and Diff
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git branch --track main origin/main 2>/dev/null || true
+          python -m gitemployed.cli.recompile_tailored --branch "$GITHUB_REF_NAME"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
