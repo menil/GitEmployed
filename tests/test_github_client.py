@@ -1538,3 +1538,59 @@ def test_ensure_project_status_no_project_id() -> None:
     with mock.patch.object(client, "_graphql") as mock_graphql:
         assert client.ensure_project_status("issue-node-id", "Applied") is True
         mock_graphql.assert_not_called()
+
+
+def test_search_issues_success() -> None:
+    """Test search_issues successfully parses and returns search results."""
+    client = GitHubClient(token="my-token", repo="owner/repo")
+    fake_items = [{"number": 123, "title": "Test Issue", "body": "details"}]
+    with mock.patch.object(
+        client, "_request", return_value={"total_count": 1, "items": fake_items}
+    ) as mock_req:
+        res = client.search_issues("repo:owner/repo is:issue test", per_page=10, page=2)
+        assert res == fake_items
+        mock_req.assert_called_once_with(
+            "GET",
+            "https://api.github.com/search/issues?q=repo%3Aowner/repo%20is%3Aissue%20test&per_page=10&page=2",
+        )
+
+
+def test_search_issues_malformed_response() -> None:
+    """Test search_issues raises GitHubClientError on non-dict or missing items."""
+    client = GitHubClient(token="my-token", repo="owner/repo")
+    with mock.patch.object(client, "_request", return_value=["not-a-dict"]):
+        with pytest.raises(GitHubClientError) as exc_info:
+            client.search_issues("test")
+        assert "Unexpected response format" in str(exc_info.value)
+
+    with mock.patch.object(client, "_request", return_value={"items": "not-a-list"}):
+        with pytest.raises(GitHubClientError) as exc_info:
+            client.search_issues("test")
+        assert "Unexpected response items format" in str(exc_info.value)
+
+
+def test_find_issue_by_branch_found() -> None:
+    """Test find_issue_by_branch returns the first matching issue."""
+    client = GitHubClient(token="my-token", repo="owner/repo")
+    fake_issue = {"number": 42, "title": "Software Engineer"}
+    with mock.patch.object(
+        client, "search_issues", return_value=[fake_issue]
+    ) as mock_search:
+        res = client.find_issue_by_branch("applications/google-swe-12345")
+        assert res == fake_issue
+        mock_search.assert_called_once_with(
+            'repo:owner/repo is:issue "applications/google-swe-12345"',
+            per_page=5,
+        )
+
+
+def test_find_issue_by_branch_not_found_or_error() -> None:
+    """Test find_issue_by_branch returns None on empty results or errors."""
+    client = GitHubClient(token="my-token", repo="owner/repo")
+    with mock.patch.object(client, "search_issues", return_value=[]):
+        assert client.find_issue_by_branch("applications/missing-branch") is None
+
+    with mock.patch.object(
+        client, "search_issues", side_effect=GitHubClientError("Search API rate limit")
+    ):
+        assert client.find_issue_by_branch("applications/error-branch") is None
