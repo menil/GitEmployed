@@ -11,6 +11,8 @@ import urllib.request
 from collections.abc import Callable
 from typing import Any
 
+from gitemployed.git_ops import mask_value
+
 logger = logging.getLogger("gitemployed.github_client")
 
 
@@ -542,6 +544,59 @@ class GitHubClient:
         if not isinstance(res, list):
             raise GitHubClientError(f"Unexpected response format: {res}")
         return res
+
+    def search_issues(
+        self,
+        query: str,
+        per_page: int = 30,
+        page: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Search issues using the GitHub Search API.
+
+        Args:
+            query: The search query string (e.g. 'repo:owner/repo is:issue ...').
+            per_page: Number of search results to return per page (max 100).
+            page: Optional page number for pagination.
+
+        Returns:
+            List of issue result dictionaries.
+        """
+        url = f"https://api.github.com/search/issues?q={urllib.parse.quote(query)}&per_page={per_page}"
+        if page is not None:
+            url += f"&page={page}"
+        res = self._request("GET", url)
+        if not isinstance(res, dict) or "items" not in res:
+            raise GitHubClientError(f"Unexpected response format: {res}")
+        items = res.get("items", [])
+        if not isinstance(items, list):
+            raise GitHubClientError(f"Unexpected response items format: {items}")
+        return items
+
+    def find_issue_by_branch(self, branch_name: str) -> dict[str, Any] | None:
+        """Find the GitHub issue associated with a tailored branch.
+
+        Queries the search API for issues within the repository referencing the
+        given branch name in comments or body text.
+
+        Args:
+            branch_name: The branch name (e.g. 'applications/company-role-hash').
+
+        Returns:
+            The matched issue dictionary, or None if no matching issue is found.
+        """
+        safe_branch = branch_name.replace('"', "")
+        query = f'repo:{self.repo} is:issue "{safe_branch}"'
+        try:
+            items = self.search_issues(query, per_page=5)
+            if items:
+                return items[0]
+        except GitHubClientError as e:
+            logger.warning(
+                "Search for issue by branch '%s' failed: %s",
+                mask_value(branch_name),
+                e,
+            )
+        return None
 
     def create_issue(
         self, title: str, body: str, labels: list[str] | None = None
