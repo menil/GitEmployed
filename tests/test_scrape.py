@@ -1001,3 +1001,168 @@ def test_company_deduplication_store_none_client_dry_run() -> None:
     is_dup, reason = store.is_duplicate(job)
     assert is_dup is True
     assert "matching job identifier" in reason
+
+
+@patch("gitemployed.scraper.time.sleep")
+@patch("gitemployed.scraper.load_settings")
+@patch("gitemployed.scraper.load_resume")
+def test_run_scraper_company_dedup_exact_and_repost_skipped(
+    mock_load_resume,
+    mock_load_settings,
+    mock_sleep,
+) -> None:
+    """Verify exact URL and reposted title variants are skipped."""
+    mock_settings = MagicMock()
+    mock_settings.custom_queries = ["Staff Software Architect"]
+    mock_settings.search.platforms = ["linkedin"]
+    mock_settings.search.work_preference = "remote"
+    mock_settings.search.job_type = "fulltime"
+    mock_settings.search.hours_old = 24
+    mock_settings.projects_v2 = None
+    mock_load_settings.return_value = mock_settings
+
+    mock_resume = MagicMock()
+    mock_resume.basics.location = MagicMock(
+        city="Seattle", state="WA", country_code="US"
+    )
+    mock_load_resume.return_value = mock_resume
+
+    # Simulate issue #49 for PitchBook in the repository history
+    mock_github_client = MagicMock()
+    mock_github_client.repo = "menil/job-search"
+    mock_github_client.project_id = None
+
+    def mock_search(query: str, **kwargs):
+        if "pitchbook" in query.lower():
+            return [
+                {
+                    "number": 49,
+                    "title": "[PitchBook] Staff Software Architect",
+                    "body": (
+                        "# Staff Software Architect at PitchBook\n\n"
+                        "## Job Details\n"
+                        "- **Company:** PitchBook\n"
+                        "- **Role:** Staff Software Architect\n"
+                        "- **Apply URL:** https://www.linkedin.com/jobs/view/4421986211\n"
+                    ),
+                }
+            ]
+        return []
+
+    mock_github_client.search_issues.side_effect = mock_search
+
+    # Both scraped jobs belong to PitchBook with matching job IDs:
+    # 1. Exact match with URL query params
+    # 2. Title variation ("- US") with same job ID
+    mock_scrape_jobs = MagicMock()
+    mock_scrape_jobs.return_value = pd.DataFrame(
+        [
+            {
+                "company": "PitchBook",
+                "title": "Staff Software Architect",
+                "location": "Remote",
+                "description": "Remote architect role",
+                "job_url": "https://www.linkedin.com/jobs/view/4421986211?refId=xyz",
+                "site": "linkedin",
+            },
+            {
+                "company": "PitchBook",
+                "title": "Staff Software Architect - US",
+                "location": "Remote",
+                "description": "Remote architect role",
+                "job_url": "https://www.linkedin.com/jobs/view/4421986211?trackingId=123",
+                "site": "linkedin",
+            },
+        ]
+    )
+
+    environ_mock = {
+        "GITHUB_TOKEN": "test_token",
+        "GITHUB_REPOSITORY": "menil/job-search",
+    }
+    with patch.dict(os.environ, environ_mock):
+        run_scraper(
+            github_client=mock_github_client,
+            scrape_fn=mock_scrape_jobs,
+        )
+
+    # Both jobs should be identified as duplicates; no issue created
+    assert mock_github_client.create_issue.call_count == 0
+
+
+@patch("gitemployed.scraper.time.sleep")
+@patch("gitemployed.scraper.load_settings")
+@patch("gitemployed.scraper.load_resume")
+def test_run_scraper_company_dedup_distinct_company_creates_issue(
+    mock_load_resume,
+    mock_load_settings,
+    mock_sleep,
+) -> None:
+    """Verify distinct company creates an issue without false deduplication."""
+    mock_settings = MagicMock()
+    mock_settings.custom_queries = ["Staff Software Architect"]
+    mock_settings.search.platforms = ["linkedin"]
+    mock_settings.search.work_preference = "remote"
+    mock_settings.search.job_type = "fulltime"
+    mock_settings.search.hours_old = 24
+    mock_settings.projects_v2 = None
+    mock_load_settings.return_value = mock_settings
+
+    mock_resume = MagicMock()
+    mock_resume.basics.location = MagicMock(
+        city="Seattle", state="WA", country_code="US"
+    )
+    mock_load_resume.return_value = mock_resume
+
+    mock_github_client = MagicMock()
+    mock_github_client.repo = "menil/job-search"
+    mock_github_client.project_id = None
+
+    def mock_search(query: str, **kwargs):
+        if "pitchbook" in query.lower():
+            return [
+                {
+                    "number": 49,
+                    "title": "[PitchBook] Staff Software Architect",
+                    "body": (
+                        "# Staff Software Architect at PitchBook\n\n"
+                        "## Job Details\n"
+                        "- **Company:** PitchBook\n"
+                        "- **Role:** Staff Software Architect\n"
+                        "- **Apply URL:** https://www.linkedin.com/jobs/view/4421986211\n"
+                    ),
+                }
+            ]
+        return []
+
+    mock_github_client.search_issues.side_effect = mock_search
+
+    # Scraped job has identical role title as PitchBook, but is at OtherTech Corp
+    mock_scrape_jobs = MagicMock()
+    mock_scrape_jobs.return_value = pd.DataFrame(
+        [
+            {
+                "company": "OtherTech Corp",
+                "title": "Staff Software Architect",
+                "location": "Remote",
+                "description": "Remote architect role",
+                "job_url": "https://www.linkedin.com/jobs/view/9999999999",
+                "site": "linkedin",
+            },
+        ]
+    )
+
+    environ_mock = {
+        "GITHUB_TOKEN": "test_token",
+        "GITHUB_REPOSITORY": "menil/job-search",
+    }
+    with patch.dict(os.environ, environ_mock):
+        run_scraper(
+            github_client=mock_github_client,
+            scrape_fn=mock_scrape_jobs,
+        )
+
+    # Issue must be created for OtherTech Corp
+    assert mock_github_client.create_issue.call_count == 1
+    _, kwargs = mock_github_client.create_issue.call_args
+    assert kwargs["title"] == "[OtherTech Corp] Staff Software Architect"
