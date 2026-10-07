@@ -19,6 +19,7 @@ import pandas as pd
 
 from gitemployed import (
     GitHubClient,
+    GitHubClientError,
     Resume,
     load_resume,
     load_settings,
@@ -269,6 +270,197 @@ def generate_queries(
     queries = [f"{latest_title} {kw}" for kw in unique_keywords]
     logger.info("Auto-generated %d search queries: %s", len(queries), queries)
     return queries
+
+
+def sanitize_company_for_search(company: str) -> str:
+    """Sanitize company name for use in GitHub issue search queries.
+
+    Strips quotes, colons, brackets, and extra whitespace to ensure safe query
+    syntax on the GitHub Search API.
+
+    Args:
+        company: Raw company name string.
+
+    Returns:
+        Sanitized company name.
+    """
+    if not company:
+        return ""
+    return re.sub(r'["\[\]:]', "", company).strip()
+
+
+def fetch_company_existing_records(
+    github_client: GitHubClient,
+    company: str,
+    max_pages: int = 5,
+    min_delay_seconds: float = 1.0,
+) -> tuple[set[str], set[str]]:
+    """Search and parse existing issue role titles and URLs for a specific company.
+
+    Queries the GitHub Search API for issues with the company name in the title,
+    extracting existing role titles and apply URLs.
+
+    Args:
+        github_client: Initialized GitHub client wrapper.
+        company: The company name to search for.
+        max_pages: Maximum number of search result pages to fetch.
+        min_delay_seconds: Pacing delay between paginated search requests.
+
+    Returns:
+        Tuple of (set_of_lowercase_role_titles, set_of_canonical_job_identifiers).
+    """
+    clean_comp = sanitize_company_for_search(company)
+    if not clean_comp:
+        return set(), set()
+
+    query = f'repo:{github_client.repo} is:issue in:title "[{clean_comp}]"'
+    logger.info("Searching issues for company '%s': query='%s'", company, query)
+
+    existing_roles: set[str] = set()
+    existing_urls: set[str] = set()
+    title_pattern = re.compile(r"^\[([^\]]+)\]\s+(.*)$")
+
+    for page in range(1, max_pages + 1):
+        try:
+            issues = github_client.search_issues(query, per_page=100, page=page)
+            if not issues:
+                break
+        except GitHubClientError as e:
+            logger.warning(
+                "Failed to search issues for company '%s' (page %d): %s",
+                company,
+                page,
+                e,
+            )
+            break
+
+        for issue in issues:
+            title = issue.get("title") or ""
+            match = title_pattern.match(title)
+            if match:
+                issue_comp = match.group(1).strip().lower()
+                if (
+                    issue_comp == company.strip().lower()
+                    or clean_comp.lower() in issue_comp
+                ):
+                    role = match.group(2).strip().lower()
+                    existing_roles.add(role)
+
+            body = issue.get("body") or ""
+            apply_url = extract_apply_url(body)
+            if apply_url:
+                identifier = extract_job_identifier(apply_url)
+                if identifier:
+                    existing_urls.add(identifier)
+                existing_urls.add(apply_url.lower())
+
+        if len(issues) < 100:
+            break
+
+        if page < max_pages and min_delay_seconds > 0:
+            time.sleep(min_delay_seconds)
+
+    logger.info(
+        "Cached %d roles and %d URLs for company '%s'",
+        len(existing_roles),
+        len(existing_urls),
+        company,
+    )
+    return existing_roles, existing_urls
+
+
+class CompanyDeduplicationStore:
+    """Run-local memoized deduplication store querying GitHub on demand per company."""
+
+    def __init__(
+        self,
+        github_client: GitHubClient | None = None,
+        min_delay_seconds: float = 1.0,
+    ) -> None:
+        """Initialize company deduplication store.
+
+        Args:
+            github_client: GitHub client instance, or None for dry-run/mock testing.
+            min_delay_seconds: Minimum delay between search API requests for pacing.
+        """
+        self.github_client = github_client
+        self.min_delay_seconds = min_delay_seconds
+        self._cache: dict[str, tuple[set[str], set[str]]] = {}
+        self._last_search_time: float = 0.0
+
+    def _ensure_company_cached(self, company: str) -> None:
+        comp_key = company.strip().lower()
+        if comp_key in self._cache:
+            return
+
+        if self.github_client is None:
+            self._cache[comp_key] = (set(), set())
+            return
+
+        # Pacing between search API requests across different companies
+        elapsed = time.time() - self._last_search_time
+        if self._last_search_time > 0 and elapsed < self.min_delay_seconds:
+            time.sleep(self.min_delay_seconds - elapsed)
+
+        roles, urls = fetch_company_existing_records(
+            self.github_client,
+            company,
+            min_delay_seconds=self.min_delay_seconds,
+        )
+        self._last_search_time = time.time()
+        self._cache[comp_key] = (roles, urls)
+
+    def is_duplicate(self, job: ScrapedJob) -> tuple[bool, str]:
+        """Check whether the scraped job is a duplicate via URL or company+role title.
+
+        Args:
+            job: ScrapedJob instance to evaluate.
+
+        Returns:
+            Tuple of (is_duplicate: bool, reason: str).
+        """
+        self._ensure_company_cached(job.company)
+        comp_key = job.company.strip().lower()
+        roles, urls = self._cache.get(comp_key, (set(), set()))
+
+        # Tier 1: URL / Job ID Match
+        if job.apply_url:
+            job_id = extract_job_identifier(job.apply_url)
+            norm_url = normalize_job_url(job.apply_url).lower()
+            if job_id and job_id in urls:
+                return True, f"matching job identifier '{job_id}'"
+            if norm_url and norm_url in urls:
+                return True, f"matching apply URL '{norm_url}'"
+
+        # Tier 2: Company + Role Title Match
+        role_key = job.title.strip().lower()
+        if role_key in roles:
+            return (
+                True,
+                f"matching role title '{job.title}' for company '{job.company}'",
+            )
+
+        return False, ""
+
+    def record_job(self, job: ScrapedJob) -> None:
+        """Record a newly published job in the in-memory cache.
+
+        Args:
+            job: ScrapedJob instance just published.
+        """
+        comp_key = job.company.strip().lower()
+        if comp_key not in self._cache:
+            self._cache[comp_key] = (set(), set())
+
+        roles, urls = self._cache[comp_key]
+        roles.add(job.title.strip().lower())
+        if job.apply_url:
+            job_id = extract_job_identifier(job.apply_url)
+            if job_id:
+                urls.add(job_id)
+            norm_url = normalize_job_url(job.apply_url).lower()
+            if norm_url:
+                urls.add(norm_url)
 
 
 def fetch_existing_jobs_cache(
