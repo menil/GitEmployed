@@ -9,9 +9,12 @@ import pytest
 from gitemployed.scraper import (
     ScrapedJob,
     build_issue_body,
+    extract_apply_url,
+    extract_job_identifier,
     fetch_existing_jobs_cache,
     format_salary,
     generate_queries,
+    normalize_job_url,
     parse_job_row,
     publish_job,
     run_scraper,
@@ -750,3 +753,103 @@ def test_run_scraper_proximity_filtering(
     assert mock_github_client.create_issue.call_count == 1
     _, kwargs = mock_github_client.create_issue.call_args
     assert "Match Co" in kwargs["title"]
+
+
+def test_normalize_job_url() -> None:
+    """Verify URL normalization handles LinkedIn, Indeed, and tracking params."""
+    # None and empty
+    assert normalize_job_url(None) == ""
+    assert normalize_job_url("") == ""
+    assert normalize_job_url("   ") == ""
+    assert normalize_job_url("Not available") == ""
+    assert normalize_job_url("nan") == ""
+
+    # LinkedIn with tracking parameters
+    li_url = "https://www.linkedin.com/jobs/view/4421986211/?refId=abc&trackingId=xyz&position=1"
+    assert normalize_job_url(li_url) == "https://linkedin.com/jobs/view/4421986211"
+
+    # LinkedIn with role slug in URL
+    li_slug = "https://linkedin.com/jobs/view/staff-software-architect-4421986211"
+    assert normalize_job_url(li_slug) == "https://linkedin.com/jobs/view/4421986211"
+
+    # LinkedIn with currentJobId query parameter
+    li_param = (
+        "https://www.linkedin.com/jobs/collections/recommended/?currentJobId=4421986211"
+    )
+    assert normalize_job_url(li_param) == "https://linkedin.com/jobs/view/4421986211"
+
+    # Indeed with jk param
+    indeed_url = "https://www.indeed.com/viewjob?jk=1234567890abcdef&from=vj&pos=top"
+    assert (
+        normalize_job_url(indeed_url)
+        == "https://indeed.com/viewjob?jk=1234567890abcdef"
+    )
+
+    # Indeed redirect link with jk
+    indeed_clk = "https://www.indeed.com/rc/clk?jk=1234567890abcdef&from=vj"
+    assert (
+        normalize_job_url(indeed_clk)
+        == "https://indeed.com/viewjob?jk=1234567890abcdef"
+    )
+
+    # General company career URL with UTM params and trailing slash/fragment
+    gen_url = "https://www.acme.com/careers/jobs/123/?utm_source=linkedin&utm_medium=job_post#apply"
+    assert normalize_job_url(gen_url) == "https://acme.com/careers/jobs/123"
+
+    # General URL keeping legitimate search params
+    param_url = "https://jobs.example.com/apply?req_id=9876&utm_campaign=winter"
+    assert normalize_job_url(param_url) == "https://jobs.example.com/apply?req_id=9876"
+
+    # URL with additional ad/social tracking params stripped
+    ad_url = (
+        "https://jobs.example.com/apply?req_id=9876&gclid=123&fbclid=456&li_fat_id=789"
+    )
+    assert normalize_job_url(ad_url) == "https://jobs.example.com/apply?req_id=9876"
+
+
+def test_extract_job_identifier() -> None:
+    """Verify extraction of canonical job identifiers."""
+    assert extract_job_identifier(None) == ""
+    assert extract_job_identifier("") == ""
+
+    # LinkedIn
+    assert (
+        extract_job_identifier(
+            "https://www.linkedin.com/jobs/view/4421986211?refId=123"
+        )
+        == "linkedin:4421986211"
+    )
+
+    # Indeed
+    assert (
+        extract_job_identifier("https://www.indeed.com/viewjob?jk=abc123xyz&from=vj")
+        == "indeed:abc123xyz"
+    )
+
+    # Other domain
+    assert (
+        extract_job_identifier("https://careers.google.com/jobs/results/12345")
+        == "https://careers.google.com/jobs/results/12345"
+    )
+
+
+def test_extract_apply_url() -> None:
+    """Verify Apply URL extraction from markdown issue bodies."""
+    assert extract_apply_url(None) is None
+    assert extract_apply_url("") is None
+    assert extract_apply_url("Random body with no URL") is None
+
+    body = """# Software Architect at PitchBook
+
+## Job Details
+- **Company:** PitchBook
+- **Role:** Software Architect
+- **Location:** Seattle, WA
+- **Salary:** Not specified
+- **Source:** linkedin
+- **Apply URL:** https://www.linkedin.com/jobs/view/4421986211?refId=xyz
+
+## Job Description
+Some description here.
+"""
+    assert extract_apply_url(body) == "https://linkedin.com/jobs/view/4421986211"

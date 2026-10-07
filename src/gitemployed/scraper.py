@@ -10,6 +10,7 @@ import os
 import random
 import re
 import time
+import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -377,6 +378,150 @@ def is_local_proximity_match(
     return False
 
 
+TRACKING_QUERY_PARAMS: frozenset[str] = frozenset(
+    {
+        "refid",
+        "trackingid",
+        "position",
+        "page",
+        "trk",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "gh_src",
+        "from",
+        "vjs",
+        "tk",
+        "bb",
+        "fccid",
+        "cmp",
+        "origin",
+        "midtoken",
+        "ek",
+        "eid",
+        "context",
+        "currentjobid",
+        "fbclid",
+        "gclid",
+        "msclkid",
+        "yclid",
+        "dclid",
+        "ttclid",
+        "li_fat_id",
+    }
+)
+
+LINKEDIN_JOB_ID_PATTERN = re.compile(
+    r"linkedin\.com/jobs/view/(?:[^/?#]*-)?(\d+)", re.IGNORECASE
+)
+LINKEDIN_CURRENT_JOB_ID_PATTERN = re.compile(r"[?&]currentJobId=(\d+)", re.IGNORECASE)
+INDEED_JK_PATTERN = re.compile(r"indeed\.com/.*[?&]jk=([a-zA-Z0-9]+)", re.IGNORECASE)
+
+APPLY_URL_PATTERN = re.compile(
+    r"-\s+\*\*Apply URL:\*\*\s+(https?://[^\s\)]+)", re.IGNORECASE
+)
+
+
+def normalize_job_url(url: Any) -> str:
+    """Normalize a job URL by removing tracking query params and standardizing host.
+
+    Extracts canonical formats for major job boards (LinkedIn, Indeed) and strips
+    tracking parameters and URL fragments for general URLs.
+
+    Args:
+        url: Raw URL string or object.
+
+    Returns:
+        Canonical normalized URL string, or empty string if invalid.
+    """
+    clean = _clean_str(url)
+    if not clean or clean.lower() in ("not available", "none", "nan"):
+        return ""
+
+    # Check for LinkedIn job ID pattern
+    # e.g., /jobs/view/4421986211, /jobs/view/slug-4421986211,
+    # or currentJobId=4421986211
+    li_match = LINKEDIN_JOB_ID_PATTERN.search(clean)
+    if li_match:
+        return f"https://linkedin.com/jobs/view/{li_match.group(1)}"
+
+    li_param = LINKEDIN_CURRENT_JOB_ID_PATTERN.search(clean)
+    if li_param:
+        return f"https://linkedin.com/jobs/view/{li_param.group(1)}"
+
+    # Check for Indeed job key jk=...
+    indeed_match = INDEED_JK_PATTERN.search(clean)
+    if indeed_match:
+        return f"https://indeed.com/viewjob?jk={indeed_match.group(1)}"
+
+    # General URL normalization
+    try:
+        parsed = urllib.parse.urlparse(clean)
+        if not parsed.scheme or not parsed.netloc:
+            return clean.rstrip("/")
+
+        scheme = parsed.scheme.lower()
+        netloc = parsed.netloc.lower()
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+
+        query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=False)
+        filtered_query = [
+            (k, v) for k, v in query_pairs if k.lower() not in TRACKING_QUERY_PARAMS
+        ]
+        new_query = urllib.parse.urlencode(filtered_query)
+
+        path = parsed.path.rstrip("/")
+        normalized = urllib.parse.urlunparse((scheme, netloc, path, "", new_query, ""))
+        return normalized.rstrip("/")
+    except (ValueError, AttributeError):
+        return clean.rstrip("/")
+
+
+def extract_job_identifier(url: Any) -> str:
+    """Extract a canonical job identifier for deduplication lookups.
+
+    Args:
+        url: Raw or normalized job URL.
+
+    Returns:
+        Canonical job key (e.g. 'linkedin:4421986211' or normalized URL).
+    """
+    norm = normalize_job_url(url)
+    if not norm:
+        return ""
+
+    li_match = LINKEDIN_JOB_ID_PATTERN.search(norm)
+    if li_match:
+        return f"linkedin:{li_match.group(1)}"
+
+    indeed_match = re.search(r"indeed\.com/viewjob\?jk=([a-zA-Z0-9]+)", norm)
+    if indeed_match:
+        return f"indeed:{indeed_match.group(1)}"
+
+    return norm
+
+
+def extract_apply_url(body: str | None) -> str | None:
+    """Extract and normalize the Apply URL from a markdown issue body.
+
+    Args:
+        body: Markdown issue body.
+
+    Returns:
+        Normalized apply URL, or None if not found.
+    """
+    if not body:
+        return None
+    match = APPLY_URL_PATTERN.search(body)
+    if match:
+        norm = normalize_job_url(match.group(1))
+        return norm if norm else match.group(1).strip()
+    return None
+
+
 def parse_job_row(row: Any) -> ScrapedJob:
     """Extracts and sanitizes a ScrapedJob DTO from a pandas Series or dictionary.
 
@@ -392,11 +537,10 @@ def parse_job_row(row: Any) -> ScrapedJob:
     description = _clean_str(row.get("description")) or "No job description provided."
 
     # Try job_url first, fallback to job_url_direct safely resolving empty strings
-    apply_url = (
-        _clean_str(row.get("job_url"))
-        or _clean_str(row.get("job_url_direct"))
-        or "Not available"
+    raw_apply_url = _clean_str(row.get("job_url")) or _clean_str(
+        row.get("job_url_direct")
     )
+    apply_url = normalize_job_url(raw_apply_url) or raw_apply_url or "Not available"
 
     source = _clean_str(row.get("site")) or "Unknown"
 
