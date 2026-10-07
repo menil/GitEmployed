@@ -6,11 +6,14 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
+from gitemployed.github_client import GitHubClientError
 from gitemployed.scraper import (
+    CompanyDeduplicationStore,
     ScrapedJob,
     build_issue_body,
     extract_apply_url,
     extract_job_identifier,
+    fetch_company_existing_records,
     fetch_existing_jobs_cache,
     format_salary,
     generate_queries,
@@ -18,6 +21,7 @@ from gitemployed.scraper import (
     parse_job_row,
     publish_job,
     run_scraper,
+    sanitize_company_for_search,
 )
 
 
@@ -853,3 +857,111 @@ def test_extract_apply_url() -> None:
 Some description here.
 """
     assert extract_apply_url(body) == "https://linkedin.com/jobs/view/4421986211"
+
+
+def test_sanitize_company_for_search() -> None:
+    """Verify company name sanitization for GitHub search syntax."""
+    assert sanitize_company_for_search("") == ""
+    assert sanitize_company_for_search('PitchBook, "Inc."') == "PitchBook, Inc."
+    assert sanitize_company_for_search("[Acme] Corp:") == "Acme Corp"
+    assert sanitize_company_for_search("  Amazon.com  ") == "Amazon.com"
+
+
+def test_fetch_company_existing_records() -> None:
+    """Verify fetching existing issue records scoped to a single company."""
+    mock_client = MagicMock()
+    mock_client.repo = "owner/repo"
+    mock_client.search_issues.return_value = [
+        {
+            "title": "[PitchBook] Staff Software Architect",
+            "body": "- **Apply URL:** https://www.linkedin.com/jobs/view/4421986211",
+        },
+        {
+            "title": "[PitchBook] Lead Software Engineer",
+            "body": "- **Apply URL:** https://www.indeed.com/viewjob?jk=abcdef12345",
+        },
+    ]
+
+    roles, urls = fetch_company_existing_records(
+        mock_client, "PitchBook", min_delay_seconds=0
+    )
+    assert "staff software architect" in roles
+    assert "lead software engineer" in roles
+    assert "linkedin:4421986211" in urls
+    assert "indeed:abcdef12345" in urls
+
+
+def test_fetch_company_existing_records_error_handling() -> None:
+    """Verify fetch_company_existing_records handles GitHubClientError gracefully."""
+    mock_client = MagicMock()
+    mock_client.repo = "owner/repo"
+    mock_client.search_issues.side_effect = GitHubClientError("Rate limit exceeded")
+
+    roles, urls = fetch_company_existing_records(
+        mock_client, "FaultyCo", min_delay_seconds=0
+    )
+    assert roles == set()
+    assert urls == set()
+
+
+def test_company_deduplication_store() -> None:
+    """Verify CompanyDeduplicationStore two-tier deduplication and caching."""
+    mock_client = MagicMock()
+    mock_client.repo = "owner/repo"
+    mock_client.search_issues.return_value = [
+        {
+            "title": "[PitchBook] Staff Software Architect",
+            "body": "- **Apply URL:** https://www.linkedin.com/jobs/view/4421986211",
+        },
+    ]
+
+    store = CompanyDeduplicationStore(mock_client, min_delay_seconds=0)
+
+    # 1. Exact URL duplicate (even if title differs slightly)
+    dup_job_url = ScrapedJob(
+        company="PitchBook",
+        title="Staff Software Architect (Hybrid)",
+        location="Seattle, WA",
+        salary="Not specified",
+        source="linkedin",
+        apply_url="https://www.linkedin.com/jobs/view/4421986211?refId=123",
+        description="...",
+    )
+    is_dup, reason = store.is_duplicate(dup_job_url)
+    assert is_dup is True
+    assert "matching job identifier 'linkedin:4421986211'" in reason
+
+    # 2. Company + Role title duplicate (even if URL is different/reposted)
+    dup_job_title = ScrapedJob(
+        company="PitchBook",
+        title="Staff Software Architect",
+        location="Seattle, WA",
+        salary="Not specified",
+        source="linkedin",
+        apply_url="https://www.linkedin.com/jobs/view/9999999999",
+        description="...",
+    )
+    is_dup, reason = store.is_duplicate(dup_job_title)
+    assert is_dup is True
+    assert "matching role title" in reason
+
+    # 3. New job from same company
+    new_job = ScrapedJob(
+        company="PitchBook",
+        title="Engineering Manager",
+        location="Seattle, WA",
+        salary="Not specified",
+        source="linkedin",
+        apply_url="https://www.linkedin.com/jobs/view/8888888888",
+        description="...",
+    )
+    is_dup, _ = store.is_duplicate(new_job)
+    assert is_dup is False
+
+    # 4. Record new job and verify it's now recognized as duplicate
+    store.record_job(new_job)
+    is_dup, _ = store.is_duplicate(new_job)
+    assert is_dup is True
+
+    # 5. Verify search_issues was only called once for PitchBook (memoized)
+    assert mock_client.search_issues.call_count == 1
