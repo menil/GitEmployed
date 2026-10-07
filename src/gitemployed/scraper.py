@@ -877,8 +877,10 @@ def run_scraper(
 
         scrape_fn = scrape_jobs
 
-    # 3. Fetch existing issues cache for deduplication
-    existing_jobs = set() if dry_run else fetch_existing_jobs_cache(github_client)
+    # 3. Initialize run-local company deduplication store
+    dedup_store = CompanyDeduplicationStore(
+        github_client=None if dry_run else github_client
+    )
 
     # 4. Generate queries by passing the loaded Resume object
     queries = generate_queries(resume, settings.custom_queries)
@@ -981,17 +983,7 @@ def run_scraper(
                 for row in jobs_df.to_dict(orient="records"):
                     job = parse_job_row(row)
 
-                    comp_lower = job.company.lower()
-                    title_lower = job.title.lower()
-                    if (comp_lower, title_lower) in existing_jobs:
-                        logger.debug(
-                            "Skipping duplicate role: [%s] %s",
-                            job.company,
-                            job.title,
-                        )
-                        continue
-
-                    # Filter by work preference type
+                    # Filter by work preference type first (cheap in-memory check)
                     job_work_type = classify_work_type(job.location, job.description)
                     is_match = job_work_type == work_preference
                     # Onsite and hybrid are mutually compatible as both are local
@@ -1034,10 +1026,21 @@ def run_scraper(
                         )
                         continue
 
+                    # Check for duplicates via CompanyDeduplicationStore
+                    is_dup, dup_reason = dedup_store.is_duplicate(job)
+                    if is_dup:
+                        logger.debug(
+                            "Skipping duplicate role (%s): [%s] %s",
+                            dup_reason,
+                            job.company,
+                            job.title,
+                        )
+                        continue
+
                     try:
                         publish_job(github_client, job, dry_run)
                         new_listings_count += 1
-                        existing_jobs.add((comp_lower, title_lower))
+                        dedup_store.record_job(job)
                     except Exception as ie:
                         logger.error(
                             "Failed to process job '%s' by '%s': %s",

@@ -283,12 +283,18 @@ def test_run_scraper_success(
     mock_load_resume.return_value = mock_resume
 
     mock_github_client = MagicMock()
+    mock_github_client.repo = "owner/repo"
     mock_github_client.project_id = "PROJ123"
-    # Return page 1 with active issues, page 2 empty to break pagination loop
-    mock_github_client.list_issues.side_effect = [
-        [{"title": "[Existing Company] Existing Role"}],
-        [],
-    ]
+    mock_github_client.search_issues.side_effect = lambda query, **kwargs: (
+        [
+            {
+                "title": "[Existing Company] Existing Role",
+                "body": "- **Apply URL:** https://skip.com",
+            }
+        ]
+        if "existing company" in query.lower()
+        else []
+    )
     mock_github_client.create_issue.return_value = {
         "number": 42,
         "node_id": "ISSUE_NODE_ID",
@@ -339,15 +345,21 @@ def test_run_scraper_success(
             scrape_fn=mock_scrape_jobs,
         )
 
-    # Verify existing issues cache page-fetching is called for page 1
-    # (stops early since len(issues) < 100)
-    assert mock_github_client.list_issues.call_count == 1
-    mock_github_client.list_issues.assert_called_once_with(
-        state="all", per_page=100, page=1
-    )
+    # Verify search_issues was called for company deduplication with expected queries
+    assert mock_github_client.search_issues.call_count == 3
+    search_queries = [
+        call[0][0] for call in mock_github_client.search_issues.call_args_list
+    ]
+    assert 'repo:owner/repo is:issue in:title "[Existing Company]"' in search_queries
+    assert 'repo:owner/repo is:issue in:title "[New Company]"' in search_queries
 
     # Verify only the new job and the NaN-sanitized job were created as issues
     assert mock_github_client.create_issue.call_count == 2
+    created_titles = [
+        call[1]["title"] for call in mock_github_client.create_issue.call_args_list
+    ]
+    assert not any("[Existing Company]" in t for t in created_titles)
+    assert any("[New Company]" in t for t in created_titles)
 
     # Verify Projects V2 field update was called
     mock_github_client.update_project_status.assert_any_call(
@@ -398,8 +410,9 @@ def test_run_scraper_robustness(
     mock_load_resume.return_value = mock_resume
 
     mock_github_client = MagicMock()
+    mock_github_client.repo = "owner/repo"
     mock_github_client.project_id = None
-    mock_github_client.list_issues.return_value = []
+    mock_github_client.search_issues.return_value = []
     # simulate create_issue raising exception for Query 2
     mock_github_client.create_issue.side_effect = Exception("API rate limit exceeded")
 
@@ -965,3 +978,26 @@ def test_company_deduplication_store() -> None:
 
     # 5. Verify search_issues was only called once for PitchBook (memoized)
     assert mock_client.search_issues.call_count == 1
+
+
+def test_company_deduplication_store_none_client_dry_run() -> None:
+    """Verify CompanyDeduplicationStore operates safely with None client in dry-run."""
+    store = CompanyDeduplicationStore(github_client=None)
+    job = ScrapedJob(
+        company="TestCorp",
+        title="Software Engineer",
+        location="Remote",
+        salary="Not specified",
+        source="linkedin",
+        apply_url="https://linkedin.com/jobs/view/123",
+        description="...",
+    )
+    is_dup, reason = store.is_duplicate(job)
+    assert is_dup is False
+    assert reason == ""
+
+    # Recording the job in dry-run should cache it locally
+    store.record_job(job)
+    is_dup, reason = store.is_duplicate(job)
+    assert is_dup is True
+    assert "matching job identifier" in reason
