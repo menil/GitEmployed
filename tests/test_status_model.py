@@ -2,12 +2,15 @@
 
 from gitemployed.status_model import (
     ACTIVITY_LABELS,
+    CLOSED_MISMATCH_REASON_LABELS,
     CLOSURE_LABELS,
+    DUPLICATE_LABEL,
     LABEL_TO_STATUS,
     LIFECYCLE_LABELS,
     REVERSE_SYNC_STATUSES,
     STATUS_TO_LABEL,
     get_updated_lifecycle_labels,
+    is_lifecycle_label_satisfied,
     resolve_closed_lifecycle_label,
     sync_lifecycle_label,
 )
@@ -188,3 +191,57 @@ def test_get_updated_lifecycle_labels() -> None:
         "applied",
         "fit:A",
     }
+
+
+def test_duplicate_label_in_closed_mismatch_reasons() -> None:
+    assert DUPLICATE_LABEL == "duplicate"
+    assert DUPLICATE_LABEL in CLOSED_MISMATCH_REASON_LABELS
+    assert DUPLICATE_LABEL not in LIFECYCLE_LABELS
+
+
+def test_resolve_closed_lifecycle_label_with_duplicate() -> None:
+    assert resolve_closed_lifecycle_label({"duplicate"}) == "triage-mismatched"
+    assert resolve_closed_lifecycle_label({"duplicate", "fit:B"}) == "triage-mismatched"
+    assert (
+        resolve_closed_lifecycle_label({"duplicate", "ready-to-apply"})
+        == "triage-mismatched"
+    )
+
+
+def test_is_lifecycle_label_satisfied_with_duplicate() -> None:
+    assert is_lifecycle_label_satisfied("triage-mismatched", {"duplicate"}) is True
+    assert (
+        is_lifecycle_label_satisfied("triage-mismatched", {"duplicate", "fit:A"})
+        is True
+    )
+    # Siblings from LIFECYCLE_LABELS violate satisfaction
+    assert (
+        is_lifecycle_label_satisfied(
+            "triage-mismatched", {"duplicate", "ready-to-apply"}
+        )
+        is False
+    )
+
+
+def test_sync_lifecycle_label_skips_generic_mismatch_for_duplicate() -> None:
+    client = FakeClient(["duplicate"])
+    sync_lifecycle_label(client, 15, "triage-mismatched")
+    assert client.labels == {"duplicate"}
+    assert client.added == []
+    assert client.removed == []
+
+    # Stale lifecycle label is removed while duplicate is preserved
+    client = FakeClient(["ready-to-apply", "duplicate"])
+    sync_lifecycle_label(client, 15, "triage-mismatched")
+    assert client.labels == {"duplicate"}
+    assert "ready-to-apply" in client.removed
+    assert "triage-mismatched" not in client.added
+
+
+def test_get_updated_lifecycle_labels_preserves_duplicate() -> None:
+    assert get_updated_lifecycle_labels("triage-mismatched", {"duplicate"}) == {
+        "duplicate"
+    }
+    assert get_updated_lifecycle_labels(
+        "triage-mismatched", {"ready-to-apply", "duplicate"}
+    ) == {"duplicate"}

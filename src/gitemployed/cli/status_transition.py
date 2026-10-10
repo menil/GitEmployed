@@ -14,6 +14,7 @@ from gitemployed.github_client import GitHubClient, GitHubClientError
 from gitemployed.loader import load_settings
 from gitemployed.schema import ProjectsV2Config
 from gitemployed.status_model import (
+    CLOSED_MISMATCH_REASON_LABELS,
     CLOSURE_LABELS,
     LABEL_TO_STATUS,
     resolve_closed_lifecycle_label,
@@ -131,8 +132,8 @@ def _resolve_label(event: dict[str, Any], cli_label: str | None) -> str:
     Validates against the known lifecycle set so unsupported input fails
     loudly before the Projects V2 no-op path can swallow it.
     """
-    label = cli_label
-    if not label:
+    raw_label = cli_label
+    if not raw_label:
         if event.get("action") == "closed":
             issue_data = event.get("issue") or {}
             labels_list = issue_data.get("labels") or []
@@ -141,18 +142,22 @@ def _resolve_label(event: dict[str, Any], cli_label: str | None) -> str:
                 for label_dict in labels_list
                 if isinstance(label_dict, dict) and label_dict.get("name")
             }
-            label = resolve_closed_lifecycle_label(current_labels)
+            raw_label = resolve_closed_lifecycle_label(current_labels)
         elif isinstance(event.get("label"), dict):
-            label = event["label"].get("name")
+            raw_label = event["label"].get("name")
 
-    if not label or label not in LABEL_TO_STATUS:
+    resolved_label = (
+        "triage-mismatched" if raw_label in CLOSED_MISMATCH_REASON_LABELS else raw_label
+    )
+
+    if not resolved_label or resolved_label not in LABEL_TO_STATUS:
         logger.error(
             "Unsupported or missing label %r. Expected one of: %s.",
-            label,
+            resolved_label,
             ", ".join(sorted(LABEL_TO_STATUS)),
         )
         sys.exit(1)
-    return label
+    return resolved_label
 
 
 def _resolve_context(

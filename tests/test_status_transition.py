@@ -111,6 +111,7 @@ def test_transition_missing_token(
         ("offer-received", "Offer Received"),
         ("rejected", "Rejected"),
         ("triage-mismatched", "Mismatched/Closed"),
+        ("duplicate", "Mismatched/Closed"),
     ],
 )
 @patch("gitemployed.cli.status_transition.GitHubClient")
@@ -147,7 +148,7 @@ def test_transition_from_cli_args(
 
     # Terminal labels close their open issue and hold the column against the
     # "item closed -> Done" automation; plain label moves do neither.
-    if label in CLOSURE_LABELS:
+    if label in CLOSURE_LABELS or label == "duplicate":
         mock_client.close_issue.assert_called_once_with(42)
         mock_client.ensure_project_status.assert_called_once_with(
             "ND_123", expected_status
@@ -449,6 +450,73 @@ def test_transition_from_closed_event_payload_with_specific_mismatch_reason(
     # Should update status to Mismatched/Closed
     mock_client.update_project_status.assert_called_once_with(
         "ND_EVENT_999", "Mismatched/Closed"
+    )
+
+
+@patch("gitemployed.cli.status_transition.GitHubClient")
+def test_transition_from_closed_event_payload_with_duplicate(
+    mock_github_client_class,
+) -> None:
+    """Verify closed event maps to Mismatched/Closed if duplicate label is present."""
+    mock_client = MagicMock()
+    mock_github_client_class.return_value = mock_client
+    mock_client.get_labels.return_value = ["ready-to-apply", "duplicate"]
+
+    event_data = {
+        "action": "closed",
+        "issue": {
+            "number": 102,
+            "node_id": "ND_EVENT_102",
+            "labels": [{"name": "ready-to-apply"}, {"name": "duplicate"}],
+        },
+        "repository": {"full_name": "event_owner/event_repo"},
+    }
+
+    with (
+        in_memory_event(event_data),
+        patch.dict(os.environ, {"GITHUB_TOKEN": "test_token"}, clear=True),
+        patch("sys.argv", ["status_transition.py", "--event-path", "event.json"]),
+    ):
+        main()
+
+    # Should update status to Mismatched/Closed
+    mock_client.update_project_status.assert_called_once_with(
+        "ND_EVENT_102", "Mismatched/Closed"
+    )
+    # Stale ready-to-apply lifecycle label dropped; duplicate label preserved
+    mock_client.remove_label.assert_called_once_with(102, "ready-to-apply")
+    mock_client.add_labels.assert_not_called()
+
+
+@patch("gitemployed.cli.status_transition.GitHubClient")
+def test_transition_from_labeled_duplicate_event_payload(
+    mock_github_client_class,
+) -> None:
+    """Verify labeled event with duplicate label transitions to Mismatched/Closed."""
+    mock_client = MagicMock()
+    mock_github_client_class.return_value = mock_client
+    mock_client.get_labels.return_value = ["duplicate"]
+
+    event_data = {
+        "action": "labeled",
+        "label": {"name": "duplicate"},
+        "issue": {
+            "number": 103,
+            "node_id": "ND_EVENT_103",
+            "labels": [{"name": "duplicate"}],
+        },
+        "repository": {"full_name": "event_owner/event_repo"},
+    }
+
+    with (
+        in_memory_event(event_data),
+        patch.dict(os.environ, {"GITHUB_TOKEN": "test_token"}, clear=True),
+        patch("sys.argv", ["status_transition.py", "--event-path", "event.json"]),
+    ):
+        main()
+
+    mock_client.update_project_status.assert_called_once_with(
+        "ND_EVENT_103", "Mismatched/Closed"
     )
 
 

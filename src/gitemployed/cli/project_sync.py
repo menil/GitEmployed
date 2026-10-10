@@ -18,10 +18,10 @@ from gitemployed.cli import add_repo_path_argument, resolve_repo_path, setup_log
 from gitemployed.github_client import GitHubClient, extract_label_names
 from gitemployed.loader import load_settings
 from gitemployed.status_model import (
+    CLOSED_MISMATCH_REASON_LABELS,
     CLOSURE_LABELS,
     LABEL_TO_STATUS,
     LIFECYCLE_LABELS,
-    MISMATCH_REASON_LABELS,
     REVERSE_SYNC_STATUSES,
     STATUS_TO_LABEL,
     get_updated_lifecycle_labels,
@@ -444,7 +444,9 @@ def _target_status(issue_number: int, state: str, labels: set[str]) -> str | Non
         target_label = resolve_closed_lifecycle_label(labels)
         return LABEL_TO_STATUS[target_label]
 
-    if "triage-mismatched" in labels or not MISMATCH_REASON_LABELS.isdisjoint(labels):
+    if "triage-mismatched" in labels or not CLOSED_MISMATCH_REASON_LABELS.isdisjoint(
+        labels
+    ):
         return LABEL_TO_STATUS["triage-mismatched"]
 
     lifecycle = sorted(label for label in labels if label in LIFECYCLE_LABELS)

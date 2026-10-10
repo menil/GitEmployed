@@ -67,18 +67,26 @@ MISMATCH_REASON_LABELS: frozenset[str] = frozenset(
     FIT_CATEGORY_MISMATCH_LABELS.values()
 )
 
+# Label assigned to duplicate job postings.
+DUPLICATE_LABEL: str = "duplicate"
+
+# Non-lifecycle reason labels that map to 'Mismatched/Closed' when closed or triaged.
+CLOSED_MISMATCH_REASON_LABELS: frozenset[str] = MISMATCH_REASON_LABELS | frozenset(
+    {DUPLICATE_LABEL}
+)
+
 
 def is_lifecycle_label_satisfied(target_label: str, current_labels: set[str]) -> bool:
     """Check if the target lifecycle label is satisfied by the current labels.
 
-    For 'triage-mismatched', it is satisfied if 'triage-mismatched' or any
-    specific mismatch reason label is present, and no other lifecycle labels
+    For 'triage-mismatched', it is satisfied if 'triage-mismatched', 'duplicate',
+    or any specific mismatch reason label is present, and no other lifecycle labels
     are present. For other labels, it requires the exact label and no siblings.
     """
     if target_label == "triage-mismatched":
         has_mismatch = (
             "triage-mismatched" in current_labels
-            or not MISMATCH_REASON_LABELS.isdisjoint(current_labels)
+            or not CLOSED_MISMATCH_REASON_LABELS.isdisjoint(current_labels)
         )
         siblings_to_remove = LIFECYCLE_LABELS & current_labels - {"triage-mismatched"}
         return has_mismatch and not siblings_to_remove
@@ -122,9 +130,10 @@ def sync_lifecycle_label(
         gh_client.remove_label(issue_number, label)
 
     # Skip adding the generic 'triage-mismatched' label if a specific mismatch reason
-    # is already present to prevent redundant label clutter.
-    if target_label == "triage-mismatched" and not MISMATCH_REASON_LABELS.isdisjoint(
-        current_labels
+    # or DUPLICATE_LABEL is already present to prevent redundant label clutter.
+    if (
+        target_label == "triage-mismatched"
+        and not CLOSED_MISMATCH_REASON_LABELS.isdisjoint(current_labels)
     ):
         return
 
@@ -141,10 +150,12 @@ CLOSURE_LABELS: frozenset[str] = frozenset({"rejected", "triage-mismatched"})
 def resolve_closed_lifecycle_label(labels: set[str]) -> str:
     """Resolve the lifecycle label for a closed issue.
 
-    Returns 'triage-mismatched' if that label or any specific mismatch label is
-    present; otherwise defaults to 'rejected'.
+    Returns 'triage-mismatched' if that label, DUPLICATE_LABEL, or any specific
+    mismatch label is present; otherwise defaults to 'rejected'.
     """
-    if "triage-mismatched" in labels or not MISMATCH_REASON_LABELS.isdisjoint(labels):
+    if "triage-mismatched" in labels or not CLOSED_MISMATCH_REASON_LABELS.isdisjoint(
+        labels
+    ):
         return "triage-mismatched"
     return "rejected"
 
@@ -156,7 +167,7 @@ def get_updated_lifecycle_labels(
     updated = current_labels - LIFECYCLE_LABELS
     if not (
         target_label == "triage-mismatched"
-        and not MISMATCH_REASON_LABELS.isdisjoint(updated)
+        and not CLOSED_MISMATCH_REASON_LABELS.isdisjoint(updated)
     ):
         updated.add(target_label)
     return updated
