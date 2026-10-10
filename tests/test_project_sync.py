@@ -653,6 +653,68 @@ def test_sync_backfill_closed_with_specific_mismatch_label_wins(
 
 
 @patch("gitemployed.cli.project_sync.GitHubClient")
+def test_sync_backfill_closed_with_duplicate_label_wins(
+    mock_github_client_class,
+) -> None:
+    """Verify duplicate label maps closed issue to Mismatched/Closed."""
+    mock_client = MagicMock()
+    mock_github_client_class.return_value = mock_client
+    mock_client.list_issues.side_effect = [
+        [
+            {
+                "number": 9,
+                "node_id": "ND_9",
+                "state": "closed",
+                "labels": [{"name": "duplicate"}],
+            }
+        ],
+        [],
+    ]
+
+    with (
+        patch.dict(os.environ, DEFAULT_ENV, clear=True),
+        patch("sys.argv", ["project_sync.py", "backfill"]),
+    ):
+        main()
+
+    mock_client.update_project_status.assert_called_once_with(
+        "ND_9", "Mismatched/Closed"
+    )
+
+
+@patch("gitemployed.cli.project_sync.GitHubClient")
+def test_sync_backfill_reverse_preserves_duplicate_label(
+    mock_github_client_class,
+) -> None:
+    """Verify reverse reconcile treats duplicate label as satisfied."""
+    mock_client = MagicMock()
+    mock_github_client_class.return_value = mock_client
+    mock_client.list_issues.side_effect = [
+        [
+            {
+                "number": 12,
+                "node_id": "ND_12",
+                "state": "closed",
+                "labels": [{"name": "duplicate"}],
+            }
+        ],
+        [],
+    ]
+    mock_client.list_project_items.return_value = {12: "Mismatched/Closed"}
+
+    with (
+        patch.dict(os.environ, DEFAULT_ENV, clear=True),
+        patch("sys.argv", ["project_sync.py", "backfill", "--reverse"]),
+    ):
+        main()
+
+    # Label is already satisfied, so no label changes or re-closures should occur
+    mock_client.add_labels.assert_not_called()
+    mock_client.remove_label.assert_not_called()
+    mock_client.update_project_status.assert_not_called()
+
+
+@patch("gitemployed.cli.project_sync.GitHubClient")
 def test_sync_backfill_closed_with_triage_pending_resolves_to_rejected(
     mock_github_client_class,
 ) -> None:
