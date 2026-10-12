@@ -16,7 +16,11 @@ on:
       hours_old:
         description: 'Only search for jobs posted within the last N hours'
         required: false
-        default: '24'
+        default: '48'
+      results_wanted:
+        description: 'Number of jobs to retrieve per query'
+        required: false
+        default: '50'
       dry_run:
         description: 'Run in dry-run mode (skip writing to remote GitHub APIs)'
         type: boolean
@@ -156,6 +160,7 @@ jobs:
           INPUT_WORK_PREFERENCE: ${{ github.event.inputs.work_preference }}
           INPUT_JOB_TYPE: ${{ github.event.inputs.job_type }}
           INPUT_HOURS_OLD: ${{ github.event.inputs.hours_old }}
+          INPUT_RESULTS_WANTED: ${{ github.event.inputs.results_wanted }}
           INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
           ARGS=()
@@ -168,6 +173,9 @@ jobs:
             fi
             if [ -n "${INPUT_HOURS_OLD:-}" ]; then
               ARGS+=("--hours-old" "$INPUT_HOURS_OLD")
+            fi
+            if [ -n "${INPUT_RESULTS_WANTED:-}" ]; then
+              ARGS+=("--results-wanted" "$INPUT_RESULTS_WANTED")
             fi
             if [ "${INPUT_DRY_RUN:-}" = "true" ]; then
               ARGS+=("--dry-run")

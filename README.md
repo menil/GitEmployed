@@ -107,7 +107,8 @@ search:
   desired_salary_min: 180000            # Optional: minimum annual USD salary for AI triage scoring
   platforms:
     - linkedin                          # Job boards to search
-  hours_old: 24                         # Only jobs posted in the last N hours
+  results_wanted: 50                    # Number of results to fetch per query
+  hours_old: 48                         # Only jobs posted in the last N hours
 
 # Optional Issue Assistant research settings.
 # research:

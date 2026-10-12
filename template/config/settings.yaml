@@ -39,8 +39,11 @@ search:
   platforms:
     - linkedin
 
+  # Number of job results to fetch per query (higher numbers dig past sticky promoted jobs)
+  results_wanted: 50
+
   # Search only for jobs posted within the last N hours
-  hours_old: 24
+  hours_old: 48
 
 # Custom queries override resume-based query generation.
 # If empty or commented out, queries are auto-generated from skills and recent position title in resume.yaml.

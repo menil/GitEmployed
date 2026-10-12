@@ -819,6 +819,7 @@ def run_scraper(
     work_preference_override: str | None = None,
     job_type_override: str | None = None,
     hours_old_override: int | None = None,
+    results_wanted_override: int | None = None,
 ) -> None:
     """Main execution function for the job scraper bot.
 
@@ -831,6 +832,7 @@ def run_scraper(
         work_preference_override: Optional work preference override to ignore settings.
         job_type_override: Optional job type override to ignore settings.
         hours_old_override: Optional hours old override to ignore settings.
+        results_wanted_override: Optional results wanted override to ignore settings.
     """
     logger.info("Loading settings from: %s", settings_path)
     settings = load_settings(settings_path)
@@ -907,6 +909,18 @@ def run_scraper(
         if hours_old_override is not None
         else settings.search.hours_old
     )
+    if hours_old <= 0:
+        raise ValueError(f"Invalid hours_old '{hours_old}'. Must be greater than zero.")
+
+    results_wanted = (
+        results_wanted_override
+        if results_wanted_override is not None
+        else settings.search.results_wanted
+    )
+    if results_wanted <= 0:
+        raise ValueError(
+            f"Invalid results_wanted '{results_wanted}'. Must be greater than zero."
+        )
 
     # Map country code to search country name
     user_country_code = (
@@ -940,12 +954,13 @@ def run_scraper(
 
     logger.info(
         "Scraper config: platforms=%s, work_preference='%s', "
-        "search_location='%s', job_type=%s, hours_old=%d",
+        "search_location='%s', job_type=%s, hours_old=%d, results_wanted=%d",
         platforms,
         work_preference,
         search_location,
         job_type,
         hours_old,
+        results_wanted,
     )
 
     # 6. Sequential search loop
@@ -968,7 +983,7 @@ def run_scraper(
                 is_remote=is_remote,
                 job_type=job_type,
                 hours_old=hours_old,
-                results_wanted=15,
+                results_wanted=results_wanted,
                 **extra_kwargs,
             )
 
