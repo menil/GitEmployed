@@ -268,6 +268,7 @@ def test_run_scraper_success(
     mock_settings.search.work_preference = "remote"
     mock_settings.search.job_type = "fulltime"
     mock_settings.search.hours_old = 24
+    mock_settings.search.results_wanted = 50
     mock_settings.projects_v2 = MagicMock(
         project_id="PROJ123", status_field_name="Status"
     )
@@ -400,6 +401,7 @@ def test_run_scraper_robustness(
     mock_settings.search.work_preference = "onsite"
     mock_settings.search.job_type = "fulltime"
     mock_settings.search.hours_old = 24
+    mock_settings.search.results_wanted = 50
     mock_settings.projects_v2 = None
     mock_load_settings.return_value = mock_settings
 
@@ -459,6 +461,7 @@ def test_run_scraper_dry_run(
     mock_settings.search.work_preference = "remote"
     mock_settings.search.job_type = "fulltime"
     mock_settings.search.hours_old = 24
+    mock_settings.search.results_wanted = 50
     mock_settings.projects_v2 = None
     mock_load_settings.return_value = mock_settings
 
@@ -515,6 +518,7 @@ def test_run_scraper_overrides(
     mock_settings.search.work_preference = "remote"
     mock_settings.search.job_type = "fulltime"
     mock_settings.search.hours_old = 24
+    mock_settings.search.results_wanted = 50
     mock_settings.projects_v2 = None
     mock_load_settings.return_value = mock_settings
 
@@ -535,6 +539,7 @@ def test_run_scraper_overrides(
         work_preference_override="onsite",
         job_type_override="contract",
         hours_old_override=48,
+        results_wanted_override=30,
     )
 
     # Check that mock_scrape_jobs was called with overridden parameters
@@ -545,7 +550,7 @@ def test_run_scraper_overrides(
         is_remote=False,
         job_type="contract",
         hours_old=48,
-        results_wanted=15,
+        results_wanted=30,
         linkedin_fetch_description=True,
     )
 
@@ -561,6 +566,8 @@ def test_run_scraper_overrides(
         "parttime",
         "--hours-old",
         "72",
+        "--results-wanted",
+        "60",
         "--dry-run",
     ],
 )
@@ -576,7 +583,49 @@ def test_scrape_cli_args(mock_run_scraper) -> None:
         work_preference_override="onsite",
         job_type_override="parttime",
         hours_old_override=72,
+        results_wanted_override=60,
     )
+
+
+@patch("gitemployed.cli.scrape.run_scraper")
+@patch(
+    "sys.argv",
+    [
+        "scrape.py",
+        "-n",
+        "40",
+    ],
+)
+def test_scrape_cli_short_args(mock_run_scraper) -> None:
+    """Verify scrape.py CLI entry point parses short options correctly."""
+    from gitemployed.cli.scrape import main as cli_main
+
+    cli_main()
+    mock_run_scraper.assert_called_once_with(
+        settings_path="config/settings.yaml",
+        resume_path="resumes/resume.yaml",
+        dry_run=False,
+        work_preference_override=None,
+        job_type_override=None,
+        hours_old_override=None,
+        results_wanted_override=40,
+    )
+
+
+def test_run_scraper_invalid_bounds() -> None:
+    """Verify run_scraper raises ValueError when hours_old or results_wanted <= 0."""
+    with (
+        patch("gitemployed.scraper.load_settings") as mock_settings,
+        patch("gitemployed.scraper.load_resume"),
+    ):
+        mock_settings.return_value.search.enabled = True
+        mock_settings.return_value.search.work_preference = "hybrid"
+        mock_settings.return_value.search.hours_old = 48
+        mock_settings.return_value.search.results_wanted = 50
+        with pytest.raises(ValueError, match="Invalid hours_old"):
+            run_scraper(dry_run=True, hours_old_override=0)
+        with pytest.raises(ValueError, match="Invalid results_wanted"):
+            run_scraper(dry_run=True, results_wanted_override=-1)
 
 
 def test_classify_work_type() -> None:
@@ -617,6 +666,7 @@ def test_run_scraper_skips_hybrid(
     mock_settings.search.work_preference = "remote"
     mock_settings.search.job_type = "fulltime"
     mock_settings.search.hours_old = 24
+    mock_settings.search.results_wanted = 50
     mock_settings.projects_v2 = None
     mock_load_settings.return_value = mock_settings
 
@@ -721,6 +771,7 @@ def test_run_scraper_proximity_filtering(
     mock_settings.search.work_preference = "onsite"
     mock_settings.search.job_type = "fulltime"
     mock_settings.search.hours_old = 24
+    mock_settings.search.results_wanted = 50
     mock_settings.search.enabled = True
     mock_load_settings.return_value = mock_settings
 
@@ -1018,6 +1069,7 @@ def test_run_scraper_company_dedup_exact_and_repost_skipped(
     mock_settings.search.work_preference = "remote"
     mock_settings.search.job_type = "fulltime"
     mock_settings.search.hours_old = 24
+    mock_settings.search.results_wanted = 50
     mock_settings.projects_v2 = None
     mock_load_settings.return_value = mock_settings
 
@@ -1105,6 +1157,7 @@ def test_run_scraper_company_dedup_distinct_company_creates_issue(
     mock_settings.search.work_preference = "remote"
     mock_settings.search.job_type = "fulltime"
     mock_settings.search.hours_old = 24
+    mock_settings.search.results_wanted = 50
     mock_settings.projects_v2 = None
     mock_load_settings.return_value = mock_settings
 

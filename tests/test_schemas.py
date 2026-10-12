@@ -24,10 +24,19 @@ def test_default_settings() -> None:
     assert settings.search.work_preference == "hybrid"
     assert settings.search.job_type == "fulltime"
     assert "linkedin" in settings.search.platforms
+    assert settings.search.hours_old == 48
+    assert settings.search.results_wanted == 50
     assert settings.custom_queries is None
     assert settings.projects_v2 is None
     assert settings.theme is None
     assert settings.gmail is None
+
+    # Test None fallback in search settings
+    none_settings = Settings.from_dict(
+        {"search": {"results_wanted": None, "hours_old": None}}
+    )
+    assert none_settings.search.results_wanted == 50
+    assert none_settings.search.hours_old == 48
     assert settings.research.search_provider == "duckduckgo"
     assert settings.research.max_results == 5
     assert settings.research.max_iterations == 6
@@ -52,6 +61,7 @@ def test_valid_settings_parsing() -> None:
             "job_type": "contract",
             "platforms": ["indeed"],
             "hours_old": 48,
+            "results_wanted": 25,
         },
         "custom_queries": ["Python Developer"],
         "projects_v2": {"project_id": "PVT_123", "status_field_name": "Job Status"},
@@ -78,6 +88,7 @@ def test_valid_settings_parsing() -> None:
     assert settings.search.job_type == "contract"
     assert settings.search.platforms == ["indeed"]
     assert settings.search.hours_old == 48
+    assert settings.search.results_wanted == 25
     assert settings.custom_queries == ["Python Developer"]
     assert settings.projects_v2 is not None
     assert settings.projects_v2.project_id == "PVT_123"
@@ -185,6 +196,28 @@ def test_invalid_settings_types() -> None:
         ValidationError, match="search.hours_old must be greater than zero"
     ):
         Settings.from_dict({"search": {"hours_old": -5}})
+
+    with pytest.raises(
+        ValidationError, match="search.results_wanted must be an integer"
+    ):
+        Settings.from_dict({"search": {"results_wanted": "not-an-int"}})
+
+    # Test boolean is not accepted as an integer for results_wanted
+    with pytest.raises(
+        ValidationError, match="search.results_wanted must be an integer"
+    ):
+        Settings.from_dict({"search": {"results_wanted": True}})
+
+    # Test bounds checking for results_wanted
+    with pytest.raises(
+        ValidationError, match="search.results_wanted must be greater than zero"
+    ):
+        Settings.from_dict({"search": {"results_wanted": 0}})
+
+    with pytest.raises(
+        ValidationError, match="search.results_wanted must be greater than zero"
+    ):
+        Settings.from_dict({"search": {"results_wanted": -5}})
 
     with pytest.raises(ValidationError, match="custom_queries must be a list"):
         Settings.from_dict({"custom_queries": "query"})

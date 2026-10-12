@@ -62,6 +62,13 @@ def main() -> None:
         default=None,
         help="Override job search hours old settings.",
     )
+    parser.add_argument(
+        "--results-wanted",
+        "-n",
+        type=int,
+        default=None,
+        help="Override job search results wanted count.",
+    )
 
     args = parser.parse_args()
 
@@ -80,6 +87,7 @@ def main() -> None:
             work_preference_override=args.work_preference,
             job_type_override=args.job_type,
             hours_old_override=args.hours_old,
+            results_wanted_override=args.results_wanted,
         )
     except Exception as e:
         logger = logging.getLogger("scrape")

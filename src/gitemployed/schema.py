@@ -50,7 +50,8 @@ class SearchConfig(BaseModel):
     platforms: list[str] = Field(
         default_factory=lambda: ["linkedin", "indeed", "zip_recruiter"]
     )
-    hours_old: int = 24
+    hours_old: int = 48
+    results_wanted: int = 50
     enabled: bool = True
     desired_salary_min: int | None = None
 
@@ -96,7 +97,7 @@ class SearchConfig(BaseModel):
     @classmethod
     def _validate_hours_old(cls, v: Any) -> int:
         if v is None:
-            return 24
+            return 48
         if isinstance(v, bool):
             raise ValidationError("search.hours_old must be an integer.")
         try:
@@ -105,6 +106,21 @@ class SearchConfig(BaseModel):
             raise ValidationError("search.hours_old must be an integer.") from e
         if val <= 0:
             raise ValidationError("search.hours_old must be greater than zero.")
+        return val
+
+    @field_validator("results_wanted", mode="before")
+    @classmethod
+    def _validate_results_wanted(cls, v: Any) -> int:
+        if v is None:
+            return 50
+        if isinstance(v, bool):
+            raise ValidationError("search.results_wanted must be an integer.")
+        try:
+            val = int(v)
+        except (ValueError, TypeError) as e:
+            raise ValidationError("search.results_wanted must be an integer.") from e
+        if val <= 0:
+            raise ValidationError("search.results_wanted must be greater than zero.")
         return val
 
     @field_validator("desired_salary_min", mode="before")
