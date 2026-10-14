@@ -21,6 +21,7 @@ from gitemployed.cli.triage import (
     _create_tailored_application_branch,
     build_canonical_body,
     extract_job_from_url,
+    fetch_job_page,
     get_category_mismatch_labels,
     get_fit_grade_label,
     get_resume_filenames,
@@ -257,6 +258,19 @@ def test_extract_job_from_url_returns_text() -> None:
         extract_job_from_url("https://acme.com/jobs/123", web_client)
         == "We need a senior Python engineer."
     )
+
+
+def test_fetch_job_page_rejects_login_wall() -> None:
+    """A short login/bot wall is a fetch failure, not a scoreable posting."""
+    web_client = mock.MagicMock()
+    web_client.fetch_url.return_value = PageContent(
+        url="https://www.linkedin.com/jobs/view/1",
+        title="Sign Up | LinkedIn",
+        text="Sign in to view this job",
+        source="direct",
+    )
+    with pytest.raises(JobFetchError, match="login or access-denied"):
+        fetch_job_page("https://www.linkedin.com/jobs/view/1", web_client)
 
 
 def test_extract_job_from_url_fetch_failure_raises() -> None:
@@ -968,6 +982,115 @@ def test_run_triage_bare_url_body_fetches_and_substitutes(
     # The approved-match comment uses the LLM-inferred company/role.
     comment_arg = mock_gh_client.post_comment.call_args[0][1]
     assert "applications/acme-corp-senior-engineer-" in comment_arg
+
+
+@mock.patch("gitemployed.cli.triage.ensure_theme_installed")
+@mock.patch("gitemployed.cli.triage.compile_resume")
+@mock.patch("gitemployed.cli.triage.commit_changes")
+@mock.patch("gitemployed.cli.triage.push_branch")
+@mock.patch("gitemployed.cli.triage.create_or_checkout_branch")
+@mock.patch("gitemployed.cli.triage.run_git")
+def test_run_triage_placeholder_description_fetches_apply_url(
+    mock_run_git: mock.MagicMock,
+    mock_checkout_branch: mock.MagicMock,
+    mock_push_branch: mock.MagicMock,
+    mock_commit: mock.MagicMock,
+    mock_compile: mock.MagicMock,
+    mock_ensure_theme_installed: mock.MagicMock,
+    mock_resume: Resume,
+    mock_settings: Settings,
+) -> None:
+    """A scraper placeholder description is replaced by the fetched posting.
+
+    Company/role from the issue body are kept, so no LLM extraction runs.
+    """
+    mock_llm_client = mock.MagicMock(spec=LLMClient)
+    mock_llm_client.triage_job.return_value = TriageResult(
+        fit_score=4.8,
+        tech_stack_fit=5.0,
+        experience_fit=5.0,
+        location_fit=5.0,
+        salary_fit=5.0,
+        industry_fit=5.0,
+        reasoning="Perfect match.",
+    )
+    mock_llm_client.tailor_resume.return_value = Resume.from_dict(mock_resume.to_dict())
+
+    web_client = mock.MagicMock()
+    web_client.research.max_content_bytes = 4096
+    web_client.fetch_url.return_value = PageContent(
+        url="https://acme.com/jobs/123",
+        title="Engineer at Acme",
+        text="We need a senior Python engineer.",
+        source="direct",
+    )
+    mock_gh_client = mock.MagicMock(spec=GitHubClient)
+    mock_gh_client.repo = "my-owner/my-repo"
+    mock_gh_client.project_id = "proj_123"
+    mock_run_git.side_effect = make_run_git_stub()
+
+    with mock.patch("pathlib.Path.open", mock.mock_open()):
+        run_triage(
+            issue_number=32,
+            issue_title="[Acme] Engineer",
+            issue_body=(
+                "**Company:** Acme\n"
+                "**Role:** Engineer\n"
+                "**Apply URL:** https://acme.com/jobs/123\n"
+                "\n## Job Description\n"
+                "No job description provided."
+            ),
+            issue_node_id="node_abc",
+            issue_labels=["triage-pending"],
+            repo_path=pathlib.Path(),
+            gh_client=mock_gh_client,
+            settings=mock_settings,
+            resume=mock_resume,
+            llm_client=mock_llm_client,
+            web_client=web_client,
+        )
+
+    web_client.fetch_url.assert_called_once_with("https://acme.com/jobs/123")
+    mock_llm_client.extract_job_details.assert_not_called()
+    assert (
+        mock_llm_client.triage_job.call_args[0][0]
+        == "We need a senior Python engineer."
+    )
+
+
+def test_run_triage_placeholder_description_fetch_failure_no_score(
+    mock_resume: Resume,
+    mock_settings: Settings,
+) -> None:
+    """If the placeholder issue's URL cannot be fetched, nothing is scored."""
+    mock_llm_client = mock.MagicMock(spec=LLMClient)
+    web_client = mock.MagicMock()
+    web_client.fetch_url.return_value = {"error": "HTTP 429"}
+    mock_gh_client = mock.MagicMock(spec=GitHubClient)
+    mock_gh_client.repo = "my-owner/my-repo"
+
+    run_triage(
+        issue_number=33,
+        issue_title="[Acme] Engineer",
+        issue_body=(
+            "**Company:** Acme\n"
+            "**Role:** Engineer\n"
+            "**Apply URL:** https://acme.com/jobs/123\n"
+            "\n## Job Description\n"
+            "No job description provided."
+        ),
+        issue_node_id="node_abc",
+        issue_labels=["triage-pending"],
+        repo_path=pathlib.Path(),
+        gh_client=mock_gh_client,
+        settings=mock_settings,
+        resume=mock_resume,
+        llm_client=mock_llm_client,
+        web_client=web_client,
+    )
+
+    mock_llm_client.triage_job.assert_not_called()
+    mock_gh_client.post_comment.assert_called_once()
 
 
 def test_run_triage_fetch_failure_no_close(

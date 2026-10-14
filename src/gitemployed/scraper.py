@@ -27,6 +27,10 @@ from gitemployed import (
     load_resume,
     load_settings,
 )
+from gitemployed.job_description import (
+    NO_DESCRIPTION_PLACEHOLDER,
+    is_missing_description,
+)
 from gitemployed.status_model import LABEL_TO_STATUS
 
 logger = logging.getLogger("job_scraper")
@@ -766,7 +770,7 @@ def parse_job_row(row: Any) -> ScrapedJob:
     company = _clean_str(row.get("company")) or "Unknown Company"
     title = _clean_str(row.get("title")) or "Unknown Role"
     location = _clean_str(row.get("location")) or "Unknown Location"
-    description = _clean_str(row.get("description")) or "No job description provided."
+    description = _clean_str(row.get("description")) or NO_DESCRIPTION_PLACEHOLDER
 
     # Try job_url first, fallback to job_url_direct safely resolving empty strings
     raw_apply_url = _clean_str(row.get("job_url")) or _clean_str(
@@ -946,7 +950,7 @@ def fetch_job_description(
     Returns:
         Full description string or None.
     """
-    if job.description and job.description != "No job description provided.":
+    if not is_missing_description(job.description):
         return job.description
 
     if job.apply_url and _is_linkedin_url(job.apply_url):
@@ -1201,10 +1205,7 @@ def run_scraper(
                         continue
 
                     # Lazy fetch description only for candidate jobs
-                    if (
-                        not job.description
-                        or job.description == "No job description provided."
-                    ):
+                    if is_missing_description(job.description):
                         logger.info(
                             "Fetching description for candidate role: [%s] %s",
                             job.company,
@@ -1229,10 +1230,7 @@ def run_scraper(
                     # remote and description enrichment failed, provided location
                     # is not onsite/hybrid.
                     job_work_type = classify_work_type(job.location, job.description)
-                    missing_desc = (
-                        not job.description
-                        or job.description == "No job description provided."
-                    )
+                    missing_desc = is_missing_description(job.description)
                     remote_fallback = (
                         work_preference == "remote"
                         and missing_desc

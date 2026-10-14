@@ -32,6 +32,10 @@ from gitemployed.git_ops import (
     slugify,
 )
 from gitemployed.github_client import GitHubClient, extract_label_names
+from gitemployed.job_description import (
+    is_missing_description,
+    looks_like_blocked_page,
+)
 from gitemployed.llm import LLMClient, QuotaExceededError, TriageResult, get_llm_client
 from gitemployed.loader import load_resume, load_settings, render_resume_yaml
 from gitemployed.renderer import (
@@ -347,6 +351,8 @@ def fetch_job_page(url: str, web_client: Any) -> dict[str, str]:
     text = _clean_str(result.text)
     if not text:
         raise JobFetchError("No readable content extracted from the URL")
+    if looks_like_blocked_page(text):
+        raise JobFetchError("The page looks like a login or access-denied wall")
     max_bytes = getattr(
         getattr(web_client, "research", None), "max_content_bytes", None
     )
@@ -955,8 +961,15 @@ def run_triage(
     # URL-aware parsing (spec 5.5): when the body has no job-description
     # section but carries an apply_url, fetch the posting and substitute its
     # extracted text (plus inferred company/role) before evaluation.
+    has_section = _has_job_description_section(issue_body)
+    # The scraper writes a placeholder under the heading when a listing has no
+    # description (e.g. LinkedIn rate-limited the fetch). Scoring that text
+    # yields meaningless all-5.0 results, so fetch the posting instead.
+    placeholder_description = has_section and is_missing_description(
+        job_details["description"]
+    )
     if (
-        not _has_job_description_section(issue_body)
+        (not has_section or placeholder_description)
         and job_details["apply_url"]
         and web_client is not None
     ):
@@ -969,13 +982,18 @@ def run_triage(
             )
             post_fetch_failure_comment(issue_number, gh_client, apply_url, str(e))
             return
-        job_details = infer_job_details_from_page(
-            page_text=page["description"],
-            page_title=page["title"],
-            url=apply_url,
-            llm_client=llm_client,
-        )
-        job_details["apply_url"] = _sanitize_apply_url(apply_url)
+        if placeholder_description:
+            # Company/role/location were already parsed from the issue body, so
+            # keep them and only substitute the fetched description.
+            job_details["description"] = page["description"]
+        else:
+            job_details = infer_job_details_from_page(
+                page_text=page["description"],
+                page_title=page["title"],
+                url=apply_url,
+                llm_client=llm_client,
+            )
+            job_details["apply_url"] = _sanitize_apply_url(apply_url)
         logger.info(
             "Fetched job posting: %s at %s",
             mask_value(job_details["role"]),
