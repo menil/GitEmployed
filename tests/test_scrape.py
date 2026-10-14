@@ -9,6 +9,7 @@ import pytest
 from gitemployed.github_client import GitHubClientError
 from gitemployed.scraper import (
     CompanyDeduplicationStore,
+    LinkedInThrottle,
     ScrapedJob,
     _is_linkedin_url,
     build_issue_body,
@@ -1318,7 +1319,7 @@ def test_fetch_linkedin_description_http_error() -> None:
     """Verify fetch_linkedin_description handles non-200 responses gracefully."""
     mock_session = MagicMock()
     mock_resp = MagicMock()
-    mock_resp.status_code = 429
+    mock_resp.status_code = 500
     mock_session.get.return_value = mock_resp
 
     desc = fetch_linkedin_description(
@@ -1326,6 +1327,55 @@ def test_fetch_linkedin_description_http_error() -> None:
         session=mock_session,
     )
     assert desc is None
+    assert mock_session.get.call_count == 1
+
+
+def _linkedin_resp(status: int, text: str = "", retry_after: str | None = None):
+    resp = MagicMock()
+    resp.status_code = status
+    resp.text = text
+    resp.headers = {"Retry-After": retry_after} if retry_after else {}
+    return resp
+
+
+def test_fetch_linkedin_description_retries_429_then_succeeds() -> None:
+    """A throttled request is retried, honoring Retry-After."""
+    ok_html = '<div class="show-more-less-html__markup"><p>Real JD</p></div>'
+    mock_session = MagicMock()
+    mock_session.get.side_effect = [
+        _linkedin_resp(429, retry_after="3"),
+        _linkedin_resp(429),
+        _linkedin_resp(200, ok_html),
+    ]
+    sleeps: list[float] = []
+
+    desc = fetch_linkedin_description(
+        "https://linkedin.com/jobs/view/1234567890",
+        session=mock_session,
+        sleep_fn=sleeps.append,
+    )
+
+    assert desc is not None and "Real JD" in desc
+    # Retry-After on the first 429, exponential backoff (2s * 2^1) on the second.
+    assert sleeps == [3.0, 4.0]
+
+
+def test_fetch_linkedin_description_gives_up_after_max_429_retries() -> None:
+    """Persistent throttling stops after the bounded retries and returns None."""
+    mock_session = MagicMock()
+    mock_session.get.return_value = _linkedin_resp(429, retry_after="999")
+    sleeps: list[float] = []
+
+    desc = fetch_linkedin_description(
+        "https://linkedin.com/jobs/view/1234567890",
+        session=mock_session,
+        sleep_fn=sleeps.append,
+    )
+
+    assert desc is None
+    assert mock_session.get.call_count == 3
+    # An oversized Retry-After is capped so the scrape is never stalled.
+    assert sleeps == [30.0, 30.0]
 
 
 def test_fetch_linkedin_description_fallback_and_missing_markup() -> None:
@@ -1600,3 +1650,66 @@ def test_run_scraper_remote_preserves_preference_when_description_missing() -> N
         mock_github_client.create_issue.call_args[1]["title"]
         == "[RemoteTech Inc] Backend Engineer"
     )
+
+
+def test_linkedin_throttle_trips_and_skips_further_requests() -> None:
+    """After consecutive exhausted 429s the rest of the run makes no requests."""
+    mock_session = MagicMock()
+    mock_session.get.return_value = _linkedin_resp(429)
+    throttle = LinkedInThrottle(max_consecutive_exhausted=2)
+    url = "https://linkedin.com/jobs/view/1234567890"
+
+    for _ in range(2):
+        assert (
+            fetch_linkedin_description(
+                url, session=mock_session, sleep_fn=lambda _s: None, throttle=throttle
+            )
+            is None
+        )
+    assert throttle.tripped
+    calls_before = mock_session.get.call_count
+
+    assert (
+        fetch_linkedin_description(
+            url, session=mock_session, sleep_fn=lambda _s: None, throttle=throttle
+        )
+        is None
+    )
+    assert mock_session.get.call_count == calls_before
+
+
+def test_linkedin_throttle_resets_after_a_successful_fetch() -> None:
+    ok_html = '<div class="show-more-less-html__markup"><p>Real JD</p></div>'
+    mock_session = MagicMock()
+    mock_session.get.side_effect = [
+        _linkedin_resp(429),
+        _linkedin_resp(429),
+        _linkedin_resp(429),  # first job exhausts its retries
+        _linkedin_resp(200, ok_html),  # second job succeeds
+    ]
+    throttle = LinkedInThrottle(max_consecutive_exhausted=2)
+    url = "https://linkedin.com/jobs/view/1234567890"
+
+    fetch_linkedin_description(
+        url, session=mock_session, sleep_fn=lambda _s: None, throttle=throttle
+    )
+    assert throttle.consecutive_exhausted == 1
+    desc = fetch_linkedin_description(
+        url, session=mock_session, sleep_fn=lambda _s: None, throttle=throttle
+    )
+
+    assert desc is not None
+    assert throttle.consecutive_exhausted == 0
+    assert not throttle.tripped
+
+
+def test_linkedin_throttle_warns_once_when_tripped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    throttle = LinkedInThrottle(max_consecutive_exhausted=2)
+
+    with caplog.at_level("WARNING", logger="job_scraper"):
+        for _ in range(5):
+            throttle.record_exhausted()
+
+    assert len([r for r in caplog.records if "throttled" in r.message]) == 1
