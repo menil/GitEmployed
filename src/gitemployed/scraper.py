@@ -854,10 +854,86 @@ def publish_job(
     return issue
 
 
+# LinkedIn throttles shared CI egress IPs with HTTP 429. A couple of short,
+# bounded retries recovers transient throttling without stalling the scrape.
+LINKEDIN_MAX_RETRIES = 2
+LINKEDIN_BACKOFF_BASE_SECONDS = 2.0
+LINKEDIN_MAX_BACKOFF_SECONDS = 30.0
+
+
+class LinkedInThrottle:
+    """Per-run circuit breaker for LinkedIn description fetches.
+
+    When throttling is sustained, retrying every candidate just burns minutes
+    of CI time on sleeps. After a few jobs in a row exhaust their 429 retries
+    the rest of the run skips LinkedIn fetches and uses the basic listing,
+    which triage can still recover from the Apply URL.
+    """
+
+    def __init__(self, max_consecutive_exhausted: int = 2) -> None:
+        self.max_consecutive_exhausted = max_consecutive_exhausted
+        self.consecutive_exhausted = 0
+
+    @property
+    def tripped(self) -> bool:
+        return self.consecutive_exhausted >= self.max_consecutive_exhausted
+
+    def record_exhausted(self) -> None:
+        self.consecutive_exhausted += 1
+        # Only the transition is worth a warning; later calls are no-ops that
+        # would otherwise repeat the message for every remaining job.
+        if self.consecutive_exhausted == self.max_consecutive_exhausted:
+            logger.warning(
+                "LinkedIn throttled %d jobs in a row; skipping description "
+                "fetches for the rest of this run.",
+                self.consecutive_exhausted,
+            )
+
+    def record_success(self) -> None:
+        self.consecutive_exhausted = 0
+
+
+def _retry_delay_seconds(resp: requests.Response, attempt: int) -> float:
+    """Return the wait before retrying a 429, honoring a numeric Retry-After."""
+    retry_after = resp.headers.get("Retry-After", "")
+    try:
+        delay = float(retry_after)
+    except (TypeError, ValueError):
+        delay = LINKEDIN_BACKOFF_BASE_SECONDS * (2**attempt)
+    return max(0.0, min(delay, LINKEDIN_MAX_BACKOFF_SECONDS))
+
+
+def _get_with_429_retry(
+    session: requests.Session,
+    url: str,
+    headers: dict[str, str],
+    timeout: float,
+    sleep_fn: Callable[[float], None],
+) -> requests.Response:
+    """GET ``url``, retrying HTTP 429 with backoff up to LINKEDIN_MAX_RETRIES."""
+    resp = session.get(url, headers=headers, timeout=timeout)
+    for attempt in range(LINKEDIN_MAX_RETRIES):
+        if resp.status_code != 429:
+            break
+        delay = _retry_delay_seconds(resp, attempt)
+        logger.info(
+            "LinkedIn rate-limited %s; retrying in %.1fs (%d/%d)",
+            url,
+            delay,
+            attempt + 1,
+            LINKEDIN_MAX_RETRIES,
+        )
+        sleep_fn(delay)
+        resp = session.get(url, headers=headers, timeout=timeout)
+    return resp
+
+
 def fetch_linkedin_description(
     job_url: str,
     session: requests.Session | None = None,
     timeout: float = 10.0,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    throttle: LinkedInThrottle | None = None,
 ) -> str | None:
     """Fetch and parse full description from a LinkedIn job posting URL.
 
@@ -865,10 +941,15 @@ def fetch_linkedin_description(
         job_url: Raw or normalized LinkedIn job URL.
         session: Optional injected requests.Session instance.
         timeout: Network timeout in seconds.
+        sleep_fn: Sleep function used between 429 retries (injectable for tests).
+        throttle: Optional run-wide breaker; once tripped, no request is made.
 
     Returns:
         Clean markdown description string, or None if extraction fails.
     """
+    if throttle is not None and throttle.tripped:
+        return None
+
     clean_url = _clean_str(job_url)
     if not clean_url or not _is_linkedin_url(clean_url):
         return None
@@ -894,7 +975,12 @@ def fetch_linkedin_description(
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
         }
-        resp = req_session.get(target_url, headers=headers, timeout=timeout)
+        resp = _get_with_429_retry(req_session, target_url, headers, timeout, sleep_fn)
+        if throttle is not None:
+            if resp.status_code == 429:
+                throttle.record_exhausted()
+            else:
+                throttle.record_success()
         if resp.status_code != 200:
             logger.warning(
                 "LinkedIn description fetch failed for %s: HTTP %d",
@@ -936,6 +1022,7 @@ def fetch_job_description(
     job: ScrapedJob,
     session: requests.Session | None = None,
     timeout: float = 10.0,
+    throttle: LinkedInThrottle | None = None,
 ) -> str | None:
     """Fetch description on demand for candidate jobs missing one.
 
@@ -946,6 +1033,7 @@ def fetch_job_description(
         job: ScrapedJob instance.
         session: Optional injected requests.Session.
         timeout: Network timeout in seconds.
+        throttle: Optional run-wide LinkedIn circuit breaker.
 
     Returns:
         Full description string or None.
@@ -955,7 +1043,7 @@ def fetch_job_description(
 
     if job.apply_url and _is_linkedin_url(job.apply_url):
         return fetch_linkedin_description(
-            job.apply_url, session=session, timeout=timeout
+            job.apply_url, session=session, timeout=timeout, throttle=throttle
         )
 
     return None
@@ -1043,9 +1131,12 @@ def run_scraper(
     desc_session: requests.Session | None = None
     if fetch_description_fn is None:
         desc_session = requests.Session()
+        linkedin_throttle = LinkedInThrottle()
 
         def _default_fetch_desc(j: ScrapedJob) -> str | None:
-            return fetch_job_description(j, session=desc_session)
+            return fetch_job_description(
+                j, session=desc_session, throttle=linkedin_throttle
+            )
 
         fetch_description_fn = _default_fetch_desc
 
