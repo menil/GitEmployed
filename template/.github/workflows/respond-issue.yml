@@ -6,12 +6,6 @@ on:
   issues:
     types: [opened]
 
-# Serialize runs so concurrent issue events queue up, allowing --drain to
-# process backlogged issue comments sequentially without overlapping runs.
-concurrency:
-  group: respond-queue
-  cancel-in-progress: false
-
 permissions:
   contents: write
   issues: write
@@ -19,16 +13,14 @@ permissions:
 
 jobs:
   respond:
+    name: Respond to Issue Comment
     # Never act on pull-request threads (issue_comment fires for PRs too).
-    # For issues:opened, short-circuit scraper-created issues (labeled
-    # triage-pending at creation) so they don't spin up a Nix job only to be
-    # skipped by respond.py's should_auto_detect guard. The full job-label
-    # set stays in respond.py; triage-pending is the only pipeline label
-    # present in an opened event.
-    if: >-
-      github.event.issue.pull_request == null
-      && (github.event_name == 'issue_comment'
-          || !contains(github.event.issue.labels.*.name, 'triage-pending'))
+    if: github.event.issue.pull_request == null && github.event_name == 'issue_comment'
+    # Serialize runs so concurrent issue events queue up, allowing --drain to
+    # process backlogged issue comments sequentially without overlapping runs.
+    concurrency:
+      group: respond-queue
+      cancel-in-progress: false
     timeout-minutes: 15
     runs-on: ubuntu-latest
     container:
@@ -48,6 +40,68 @@ jobs:
         run: |
           set -e
           python -m gitemployed.cli.respond --event-path "$GITHUB_EVENT_PATH" --drain
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL }}
+          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+          JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+          AGENT_BOT_LOGINS: ${{ vars.AGENT_BOT_LOGINS }}
+
+      - name: Update Badge (Failed)
+        if: failure() && github.repository != vars.TEMPLATE_REPO
+        run: python .github/scripts/update_badge.py "Issue Assistant" "failing" "red" "respond-status.json"
+        env:
+          GIST_ID: ${{ vars.GIST_ID }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+
+      - name: Update Badge (Passed)
+        if: success() && github.repository != vars.TEMPLATE_REPO
+        run: python .github/scripts/update_badge.py "Issue Assistant" "passing" "green" "respond-status.json"
+        env:
+          GIST_ID: ${{ vars.GIST_ID }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+
+  triage-opened:
+    name: Triage Opened Issue
+    # For issues:opened, short-circuit scraper-created issues (labeled
+    # triage-pending at creation) so they are left to the triage-issue.yml
+    # workflow. Run manually submitted job-URL issues in the full container
+    # so Bun, Chromium, and pdf-vdiff are available for resume tailoring.
+    if: >-
+      github.event.issue.pull_request == null
+      && github.event_name == 'issues'
+      && !contains(github.event.issue.labels.*.name, 'triage-pending')
+    concurrency:
+      group: respond-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/menil/gitemployed:latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set Badge (Running)
+        if: github.repository != vars.TEMPLATE_REPO
+        run: python .github/scripts/update_badge.py "Issue Assistant" "running" "yellow" "respond-status.json"
+        env:
+          GIST_ID: ${{ vars.GIST_ID }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+
+      - name: Run Issue Responder
+        run: |
+          set -e
+          python -m gitemployed.cli.respond --event-path "$GITHUB_EVENT_PATH"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_PAT: ${{ secrets.GH_PAT }}
