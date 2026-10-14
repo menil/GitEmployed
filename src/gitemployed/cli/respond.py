@@ -1,7 +1,7 @@
 """Issue Assistant responder: webhook handler for issue comments and opened issues.
 
 Responds to ``issue_comment`` (created) and ``issues`` (opened) webhook events
-(spec 4.1):
+(spec 4.1), or drains unresponded comments across open issues (--drain):
 
 - **Comment flow:** skips bot authors, empty comments, and comments carrying a
   hidden automation marker (the assistant's own status-update confirmation, or
@@ -14,6 +14,8 @@ Responds to ``issue_comment`` (created) and ``issues`` (opened) webhook events
   posting, builds the canonical job body, and runs the shared triage core
   directly. Issues already labeled ``triage-pending`` are left to the
   ``triage-issue.yml`` webhook.
+- **Queue drain flow (--drain):** scans open issues for pending unresponded human
+  comments and processes them sequentially, allowing batched queue catch-up.
 
 Direct Projects V2 status updates are performed for low-latency synchronization
 when configured, with ``status-transition.yml`` remaining the eventual
@@ -30,6 +32,7 @@ import sys
 from typing import Any
 
 from gitemployed.assistant import (
+    _SECRET_RE,
     ACTION_REPLY,
     ACTION_SKIP,
     ACTION_STATUS_UPDATE,
@@ -336,6 +339,62 @@ def execute_action(
     logger.warning("Unknown action %r; doing nothing.", action.action)
 
 
+def is_comment_already_responded(
+    comments: list[dict[str, Any]],
+    trigger_comment_id: int | None,
+    bot_logins: set[str],
+) -> bool:
+    """Return True if trigger_comment_id is already followed by a bot response.
+
+    If trigger_comment_id is None, checks whether the latest comment in the
+    thread is already from a bot or contains an automation marker.
+
+    Args:
+        comments: List of comment dictionaries in chronological order.
+        trigger_comment_id: Comment ID that triggered the responder, or None
+            to check only the thread's latest comment.
+        bot_logins: Set of lowercase bot login usernames to treat as bot authors.
+
+    Returns:
+        True if the comment was already followed by a bot response or marker,
+        False otherwise.
+    """
+    if not comments:
+        return False
+
+    if trigger_comment_id is None:
+        latest = comments[-1]
+        return is_bot_author(
+            latest.get("user"), bot_logins
+        ) or contains_automation_marker(latest.get("body"))
+
+    # Find index of trigger_comment_id
+    idx = -1
+    for i, c in enumerate(comments):
+        if _to_int(c.get("id")) == trigger_comment_id:
+            idx = i
+            break
+
+    if idx == -1:
+        # Trigger comment not found in current comment list
+        logger.warning(
+            "Trigger comment ID %s not found in list of %d comments; "
+            "allowing processing.",
+            trigger_comment_id,
+            len(comments),
+        )
+        return False
+
+    # Check all subsequent comments
+    for subsequent in comments[idx + 1 :]:
+        if is_bot_author(
+            subsequent.get("user"), bot_logins
+        ) or contains_automation_marker(subsequent.get("body")):
+            return True
+
+    return False
+
+
 def handle_comment_event(
     event: dict[str, Any],
     *,
@@ -346,13 +405,15 @@ def handle_comment_event(
     resume: Resume,
     repo_path: pathlib.Path,
     bot_logins: set[str],
+    preloaded_comments: list[dict[str, Any]] | None = None,
 ) -> None:
     """Process an ``issue_comment`` created event (spec 4.1 comment job).
 
     Guards run before any work: bot authors, empty comments, and the assistant's
     own confirmation-marker comments are skipped. Otherwise the thread context is
-    loaded (fresh labels via ``get_labels``, comments via ``list_comments``) and
-    the agent loop is run with the triggering comment as the initial user turn.
+    loaded (fresh labels via ``get_labels``, comments via ``list_comments`` or
+    ``preloaded_comments``) and the agent loop is run with the triggering comment
+    as the initial user turn.
     """
     comment = event.get("comment") or {}
     comment_body = comment.get("body", "") or ""
@@ -377,11 +438,23 @@ def handle_comment_event(
     issue_body = issue.get("body", "") or ""
     issue_node_id = issue.get("node_id")
     labels = gh_client.get_labels(issue_number)
-    comments = [
-        c.get("body", "") or ""
-        for c in gh_client.list_comments(issue_number)
-        if isinstance(c, dict)
-    ]
+    if preloaded_comments is not None:
+        raw_comments = [c for c in preloaded_comments if isinstance(c, dict)]
+    else:
+        raw_comments = [
+            c for c in gh_client.list_comments(issue_number) if isinstance(c, dict)
+        ]
+
+    comment_id = _to_int(comment.get("id"))
+    if is_comment_already_responded(raw_comments, comment_id, bot_logins):
+        logger.info(
+            "Issue #%d already has a bot response following comment %s; skipping.",
+            issue_number,
+            comment_id,
+        )
+        return
+
+    comments = [c.get("body", "") or "" for c in raw_comments]
 
     action = run_agent(
         llm_client,
@@ -562,6 +635,122 @@ def handle_opened_event(
     )
 
 
+def drain_pending_issues(
+    *,
+    gh_client: GitHubClient,
+    web_client: Any,
+    llm_client: Any,
+    settings: Settings,
+    resume: Resume,
+    repo_path: pathlib.Path,
+    bot_logins: set[str],
+    exclude_issue_numbers: set[int] | None = None,
+    max_drain: int = 20,
+) -> int:
+    """Scan recently updated open issues and respond to unresponded human comments.
+
+    For each issue with pending activity, the responder processes the latest
+    comment (`comments[-1]`). Preceding unresponded comments are included in the
+    agent's prompt conversation context, allowing the LLM to address the full
+    thread history in a single response turn without duplicate runs or comment
+    spam.
+
+    Args:
+        gh_client: GitHub API client.
+        web_client: Web client for research.
+        llm_client: LLM client for agent reasoning.
+        settings: System settings.
+        resume: Base resume.
+        repo_path: Path to repository root.
+        bot_logins: Set of lowercased bot logins to ignore.
+        exclude_issue_numbers: Set of issue numbers to skip (e.g. already processed).
+        max_drain: Maximum number of issues to process in one drain pass.
+
+    Returns:
+        The count of issues responded to.
+    """
+    excluded = set(exclude_issue_numbers) if exclude_issue_numbers else set()
+    logger.info("Scanning open issues for pending comments to drain...")
+    try:
+        candidate_issues = gh_client.list_issues(
+            state="open", sort="updated", direction="desc", per_page=50
+        )
+    except Exception as e:
+        logger.error("Failed to list issues for queue draining: %s", e)
+        return 0
+
+    processed = 0
+    for issue in candidate_issues:
+        if processed >= max_drain:
+            logger.info("Reached max drain limit of %d issues.", max_drain)
+            break
+
+        # Never act on pull-request threads
+        if issue.get("pull_request") is not None:
+            continue
+
+        issue_number = _to_int(issue.get("number"))
+        if not issue_number or issue_number in excluded:
+            continue
+
+        # Fast-skip issues known to have 0 comments (GitHub REST API has 'comments')
+        if issue.get("comments") == 0:
+            continue
+
+        try:
+            comments = gh_client.list_comments(issue_number)
+        except Exception as e:
+            logger.warning("Could not list comments for issue #%d: %s", issue_number, e)
+            continue
+
+        if not comments:
+            continue
+
+        latest_comment = comments[-1]
+        latest_body = latest_comment.get("body", "") or ""
+        author = latest_comment.get("user") or {}
+
+        if is_bot_author(author, bot_logins):
+            continue
+        if not latest_body.strip():
+            continue
+        if contains_automation_marker(latest_body):
+            continue
+
+        logger.info(
+            "Draining pending comment on issue #%d from %r.",
+            issue_number,
+            author.get("login"),
+        )
+        synthetic_event = {
+            "action": "created",
+            "issue": issue,
+            "comment": latest_comment,
+        }
+        try:
+            handle_comment_event(
+                synthetic_event,
+                gh_client=gh_client,
+                web_client=web_client,
+                llm_client=llm_client,
+                settings=settings,
+                resume=resume,
+                repo_path=repo_path,
+                bot_logins=bot_logins,
+                preloaded_comments=comments,
+            )
+            processed += 1
+            excluded.add(issue_number)
+        except QuotaExceededError:
+            raise
+        except Exception as e:
+            logger.exception("Failed to drain issue #%d: %s", issue_number, e)
+            _post_diagnostic_comment(gh_client, synthetic_event, e)
+
+    logger.info("Queue drain finished. Processed %d issue(s).", processed)
+    return processed
+
+
 def _post_diagnostic_comment(
     gh_client: GitHubClient, event: dict[str, Any], error: Exception
 ) -> None:
@@ -570,10 +759,12 @@ def _post_diagnostic_comment(
     issue_number = _to_int(issue.get("number"))
     if not issue_number:
         return
+    sanitized_error = _SECRET_RE.sub("[redacted-token]", str(error))
     body = (
+        f"{STATUS_CONFIRMATION_MARKER}\n"
         "### Issue Assistant: Error\n\n"
         "I hit an error while processing this thread:\n"
-        f"```\n{error}\n```\n"
+        f"```\n{sanitized_error}\n```\n"
         "Please check the workflow run log for details."
     )
     try:
@@ -593,6 +784,14 @@ def _parse_args() -> argparse.Namespace:
         "--event-path",
         type=str,
         help="Path to GitHub webhook event JSON file (e.g. GITHUB_EVENT_PATH).",
+    )
+    parser.add_argument(
+        "--drain",
+        action="store_true",
+        help=(
+            "Drain and respond to all pending unresponded human comments "
+            "on open issues."
+        ),
     )
     add_repo_path_argument(parser)
     return parser.parse_args()
@@ -617,20 +816,25 @@ def main() -> None:
     repo = os.environ.get("GITHUB_REPOSITORY")
 
     event_path = args.event_path or os.environ.get("GITHUB_EVENT_PATH")
-    if not event_path:
-        logger.error("No event payload specified (--event-path or GITHUB_EVENT_PATH).")
+    if not event_path and not args.drain:
+        logger.error(
+            "No event payload specified (--event-path or GITHUB_EVENT_PATH) "
+            "and --drain not set."
+        )
         sys.exit(1)
 
-    try:
-        with pathlib.Path(event_path).open("r", encoding="utf-8") as f:
-            event = json.load(f)
-    except Exception as e:
-        logger.error("Failed to parse event payload JSON: %s", e)
-        sys.exit(1)
+    event: dict[str, Any] | None = None
+    if event_path:
+        try:
+            with pathlib.Path(event_path).open("r", encoding="utf-8") as f:
+                event = json.load(f)
+        except Exception as e:
+            logger.error("Failed to parse event payload JSON: %s", e)
+            sys.exit(1)
 
-    # Repository can be resolved from the payload if the env var is missing.
-    if not repo and isinstance(event.get("repository"), dict):
-        repo = event["repository"].get("full_name")
+        # Repository can be resolved from the payload if the env var is missing.
+        if not repo and isinstance(event.get("repository"), dict):
+            repo = event["repository"].get("full_name")
 
     if not token:
         logger.error("GITHUB_TOKEN environment variable is missing.")
@@ -654,17 +858,58 @@ def main() -> None:
         logger.error("Failed to initialize GitHubClient: %s", e)
         sys.exit(1)
 
+    processed_issues: set[int] = set()
+    event_error = False
     try:
-        event_kind = classify_event(event)
         # research.model overrides the provider default for the responder only;
         # triage/tailor keep GEMINI_MODEL / OPENROUTER_MODEL (spec 8.1).
         model_override = getattr(settings.research, "model", "") or None
         llm_client = get_llm_client(model=model_override)
         web_client = WebClient(settings.research)
 
-        if event_kind == "comment":
-            handle_comment_event(
-                event,
+        if event is not None:
+            issue_number = _to_int((event.get("issue") or {}).get("number"))
+            if issue_number:
+                processed_issues.add(issue_number)
+
+            try:
+                event_kind = classify_event(event)
+                if event_kind == "comment":
+                    handle_comment_event(
+                        event,
+                        gh_client=gh_client,
+                        web_client=web_client,
+                        llm_client=llm_client,
+                        settings=settings,
+                        resume=resume,
+                        repo_path=repo_path,
+                        bot_logins=_bot_logins_from_env(),
+                    )
+                else:
+                    handle_opened_event(
+                        event,
+                        gh_client=gh_client,
+                        web_client=web_client,
+                        llm_client=llm_client,
+                        settings=settings,
+                        resume=resume,
+                        repo_path=repo_path,
+                    )
+            except RespondError as e:
+                logger.info("Ignoring event: %s", e)
+                if not args.drain:
+                    sys.exit(0)
+            except QuotaExceededError:
+                raise
+            except Exception as e:
+                logger.exception("Triggering event failed: %s", e)
+                _post_diagnostic_comment(gh_client, event, e)
+                event_error = True
+                if not args.drain:
+                    sys.exit(1)
+
+        if args.drain:
+            drain_pending_issues(
                 gh_client=gh_client,
                 web_client=web_client,
                 llm_client=llm_client,
@@ -672,26 +917,18 @@ def main() -> None:
                 resume=resume,
                 repo_path=repo_path,
                 bot_logins=_bot_logins_from_env(),
+                exclude_issue_numbers=processed_issues,
             )
-        else:
-            handle_opened_event(
-                event,
-                gh_client=gh_client,
-                web_client=web_client,
-                llm_client=llm_client,
-                settings=settings,
-                resume=resume,
-                repo_path=repo_path,
-            )
-    except RespondError as e:
-        logger.info("Ignoring event: %s", e)
-        sys.exit(0)
     except QuotaExceededError as e:
         logger.warning("LLM API quota exceeded: %s", e)
         sys.exit(EXIT_QUOTA_EXCEEDED)
     except Exception as e:
         logger.exception("Responder failed: %s", e)
-        _post_diagnostic_comment(gh_client, event, e)
+        if event is not None and not event_error:
+            _post_diagnostic_comment(gh_client, event, e)
+        sys.exit(1)
+
+    if event_error:
         sys.exit(1)
 
 

@@ -6,8 +6,10 @@ on:
   issues:
     types: [opened]
 
+# Serialize runs so concurrent issue events queue up, allowing --drain to
+# process backlogged issue comments sequentially without overlapping runs.
 concurrency:
-  group: respond-${{ github.event.issue.number }}
+  group: respond-queue
   cancel-in-progress: false
 
 permissions:
@@ -45,7 +47,7 @@ jobs:
       - name: Run Issue Responder
         run: |
           set -e
-          python -m gitemployed.cli.respond --event-path "$GITHUB_EVENT_PATH"
+          python -m gitemployed.cli.respond --event-path "$GITHUB_EVENT_PATH" --drain
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_PAT: ${{ secrets.GH_PAT }}
