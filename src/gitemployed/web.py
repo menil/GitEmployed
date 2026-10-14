@@ -26,6 +26,7 @@ from collections.abc import Callable
 from typing import Any
 
 import trafilatura
+from bs4 import BeautifulSoup
 from ddgs import DDGS
 from pydantic import BaseModel, ConfigDict
 
@@ -316,6 +317,55 @@ def _extract_text(html: str) -> str:
     except Exception:
         return ""
     return (text or "").strip()
+
+
+# A real posting's description is far longer than the one-line teasers some
+# pages put in structured data, which are not worth preferring over page text.
+_MIN_JSON_LD_DESCRIPTION_CHARS = 200
+
+
+def _iter_json_ld_nodes(node: Any) -> list[dict[str, Any]]:
+    """Flatten a JSON-LD document (object, list or ``@graph``) into dict nodes."""
+    if isinstance(node, list):
+        return [n for item in node for n in _iter_json_ld_nodes(item)]
+    if not isinstance(node, dict):
+        return []
+    nodes = [node]
+    nodes.extend(_iter_json_ld_nodes(node.get("@graph")))
+    return nodes
+
+
+def _extract_job_posting(html: str) -> tuple[str, str] | None:
+    """Return ``(title, description)`` from a schema.org ``JobPosting`` block.
+
+    Boards such as Greenhouse, Lever, Ashby and Workday embed the full posting
+    as JSON-LD. Finding one is positive evidence the page is a job posting, so
+    it is preferred over scraping page text, which cannot tell a posting from a
+    login wall. Returns None when no usable ``JobPosting`` is present.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            document = json.loads(script.string or "")
+        except (ValueError, TypeError):
+            continue
+        for node in _iter_json_ld_nodes(document):
+            node_type = node.get("@type")
+            types = node_type if isinstance(node_type, list) else [node_type]
+            if "JobPosting" not in types:
+                continue
+            raw_description = node.get("description")
+            if not isinstance(raw_description, str):
+                continue
+            # The description is usually an HTML fragment (sometimes escaped).
+            description = BeautifulSoup(raw_description, "html.parser").get_text(
+                "\n", strip=True
+            )
+            if len(description) < _MIN_JSON_LD_DESCRIPTION_CHARS:
+                continue
+            title = node.get("title")
+            return (title.strip() if isinstance(title, str) else ""), description
+    return None
 
 
 def _parse_jina_body(body: str) -> tuple[str, str]:
@@ -657,6 +707,15 @@ class WebClient:
         except _FetchError as e:
             return _error(str(e))
         html = raw.decode("utf-8", errors="replace")
+        posting = _extract_job_posting(html)
+        if posting is not None:
+            posting_title, posting_text = posting
+            return PageContent(
+                url=final_url,
+                title=posting_title or _extract_title(html),
+                text=posting_text,
+                source="direct",
+            )
         text = _extract_text(html)
         if text:
             return PageContent(

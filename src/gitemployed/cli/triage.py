@@ -1074,6 +1074,23 @@ def run_triage(
         job_location=job_details.get("location"),
         desired_salary_min=settings.search.desired_salary_min,
     )
+    # The model is the last line of defense against walls the text heuristics
+    # miss (it flagged LinkedIn's bot-check page as such in its own reasoning).
+    # Its scores are meaningless in that case, so park instead of acting on them.
+    if not triage_res.description_usable:
+        logger.warning(
+            "Issue #%d: fetched text is not a job posting; not scoring.", issue_number
+        )
+        flag_needs_description(issue_number, gh_client, issue_labels)
+        gh_client.post_comment(
+            issue_number,
+            "### AI Triage: Not a Job Posting\n\n"
+            "The text I could retrieve for this job doesn't look like an actual "
+            "posting (for example a login or bot-check page), so I didn't score "
+            f"it. {_NEEDS_DESCRIPTION_INSTRUCTIONS}",
+        )
+        return
+
     # Update issue title to follow the canonical [Company] Role format
     company = job_details.get("company", DEFAULT_COMPANY)
     role = job_details.get("role", DEFAULT_ROLE)

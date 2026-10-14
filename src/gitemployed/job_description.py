@@ -13,15 +13,25 @@ def is_missing_description(description: str | None) -> bool:
 
 # Fetched pages behind a login or bot wall are non-empty, so without this check
 # they would be scored as if they were the posting. Real postings are long, so
-# the markers only count on short pages to avoid rejecting a genuine JD that
-# merely mentions "sign in".
+# the markers only count on short pages. They are also kept specific (full
+# phrases from the walls we have seen, not single words like "captcha"), because
+# a false positive parks a genuine posting. Unknown walls are caught later by
+# the JSON-LD preference in the web client and the model's description_usable.
 _BLOCKED_PAGE_MARKERS = (
+    # Generic login / bot walls.
     "sign in to view",
     "authwall",
     "access denied",
-    "enable javascript",
     "verify you are a human",
     "unusual traffic",
+    "enable javascript and cookies to continue",
+    # LinkedIn's interstitial: "Checking your browser - reCAPTCHA ... Click
+    # here if you are not automatically redirected after 5 seconds."
+    "checking your browser before accessing",
+    "if you are not automatically redirected",
+    # Cloudflare challenge pages.
+    "just a moment...",
+    "attention required! | cloudflare",
 )
 _BLOCKED_PAGE_MAX_CHARS = 1500
 

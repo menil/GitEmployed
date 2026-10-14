@@ -1152,6 +1152,54 @@ def test_run_triage_label_failure_posts_no_comment(
     mock_gh_client.post_comment.assert_not_called()
 
 
+def test_run_triage_unusable_description_flag_parks_issue(
+    mock_resume: Resume,
+    mock_settings: Settings,
+) -> None:
+    """If the model says the text isn't a posting, act on nothing it scored."""
+    mock_llm_client = mock.MagicMock(spec=LLMClient)
+    mock_llm_client.triage_job.return_value = TriageResult(
+        fit_score=2.6,
+        tech_stack_fit=3.0,
+        experience_fit=3.0,
+        location_fit=3.0,
+        salary_fit=3.0,
+        industry_fit=3.0,
+        reasoning="This is a bot-check page.",
+        description_usable=False,
+    )
+    mock_gh_client = mock.MagicMock(spec=GitHubClient)
+    mock_gh_client.repo = "my-owner/my-repo"
+
+    run_triage(
+        issue_number=43,
+        issue_title="[Acme] Engineer",
+        issue_body=(
+            "**Company:** Acme\n**Role:** Engineer\n"
+            "\n## Job Description\nChecking your browser before accessing "
+            "linkedin.com. Click here if you are not redirected."
+            + " Filler text so the heuristics do not catch it."
+            * 40
+        ),
+        issue_node_id="node_abc",
+        issue_labels=["triage-pending"],
+        repo_path=pathlib.Path(),
+        gh_client=mock_gh_client,
+        settings=mock_settings,
+        resume=mock_resume,
+        llm_client=mock_llm_client,
+        web_client=None,
+    )
+
+    mock_llm_client.tailor_resume.assert_not_called()
+    mock_gh_client.close_issue.assert_not_called()
+    mock_gh_client.update_issue_title.assert_not_called()
+    mock_gh_client.remove_label.assert_called_once_with(43, "triage-pending")
+    mock_gh_client.add_labels.assert_called_once_with(43, ["needs-description"])
+    comment_arg = mock_gh_client.post_comment.call_args[0][1]
+    assert "Not a Job Posting" in comment_arg
+
+
 def test_run_triage_no_description_and_no_url_is_not_scored(
     mock_resume: Resume,
     mock_settings: Settings,
