@@ -54,6 +54,7 @@ class SearchConfig(BaseModel):
     results_wanted: int = 50
     enabled: bool = True
     desired_salary_min: int | None = None
+    combine_skills_with_or: bool = True
 
     @field_validator("work_preference", mode="before")
     @classmethod
@@ -142,13 +143,13 @@ class SearchConfig(BaseModel):
             )
         return val
 
-    @field_validator("enabled", mode="before")
+    @field_validator("enabled", "combine_skills_with_or", mode="before")
     @classmethod
-    def _validate_enabled(cls, v: Any) -> bool:
+    def _validate_bool_default_true(cls, v: Any) -> bool:
         if v is None:
             return True
         if isinstance(v, str):
-            return v.lower() not in ("false", "0", "no", "")
+            return v.strip().lower() not in ("false", "0", "no", "")
         return bool(v)
 
     @classmethod

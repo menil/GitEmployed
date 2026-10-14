@@ -26,6 +26,7 @@ def test_default_settings() -> None:
     assert "linkedin" in settings.search.platforms
     assert settings.search.hours_old == 48
     assert settings.search.results_wanted == 50
+    assert settings.search.combine_skills_with_or is True
     assert settings.custom_queries is None
     assert settings.projects_v2 is None
     assert settings.theme is None
@@ -33,10 +34,17 @@ def test_default_settings() -> None:
 
     # Test None fallback in search settings
     none_settings = Settings.from_dict(
-        {"search": {"results_wanted": None, "hours_old": None}}
+        {
+            "search": {
+                "results_wanted": None,
+                "hours_old": None,
+                "combine_skills_with_or": None,
+            }
+        }
     )
     assert none_settings.search.results_wanted == 50
     assert none_settings.search.hours_old == 48
+    assert none_settings.search.combine_skills_with_or is True
     assert settings.research.search_provider == "duckduckgo"
     assert settings.research.max_results == 5
     assert settings.research.max_iterations == 6
@@ -62,6 +70,7 @@ def test_valid_settings_parsing() -> None:
             "platforms": ["indeed"],
             "hours_old": 48,
             "results_wanted": 25,
+            "combine_skills_with_or": False,
         },
         "custom_queries": ["Python Developer"],
         "projects_v2": {"project_id": "PVT_123", "status_field_name": "Job Status"},
@@ -89,6 +98,7 @@ def test_valid_settings_parsing() -> None:
     assert settings.search.platforms == ["indeed"]
     assert settings.search.hours_old == 48
     assert settings.search.results_wanted == 25
+    assert settings.search.combine_skills_with_or is False
     assert settings.custom_queries == ["Python Developer"]
     assert settings.projects_v2 is not None
     assert settings.projects_v2.project_id == "PVT_123"
