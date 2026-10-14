@@ -45,6 +45,9 @@ search:
   # Search only for jobs posted within the last N hours
   hours_old: 48
 
+  # Combine top skills with Boolean OR into a single query instead of running separate queries
+  combine_skills_with_or: true
+
 # Custom queries override resume-based query generation.
 # If empty or commented out, queries are auto-generated from skills and recent position title in resume.yaml.
 custom_queries: []

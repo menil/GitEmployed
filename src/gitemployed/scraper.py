@@ -213,13 +213,18 @@ def build_issue_body(
 
 
 def generate_queries(
-    resume: Resume | None, settings_custom_queries: list[str] | None
+    resume: Resume | None,
+    settings_custom_queries: list[str] | None,
+    combine_skills_with_or: bool = True,
 ) -> list[str]:
     """Generate job search queries using custom override or base resume data.
 
     Args:
         resume: Parsed Resume model (can be None if custom queries are set).
         settings_custom_queries: Optional list of custom queries override.
+        combine_skills_with_or: If True, combines skills into a single Boolean
+            OR query with the latest job title instead of generating multiple
+            separate queries.
 
     Returns:
         List of query strings.
@@ -260,14 +265,30 @@ def generate_queries(
         if len(unique_keywords) == 5:
             break
 
-    # Build queries: [Position] [Skill]
-    # Pair latest job position with individual tech skills to target niche,
-    # stack-specific job postings.
+    # Consolidate skills into a single Boolean OR clause to minimize search
+    # volume and avoid job board rate-limit backoffs, or generate individual
+    # queries per skill in legacy mode.
     if not unique_keywords:
         logger.info("No skills found in resume, falling back to position title.")
         return [latest_title]
 
-    queries = [f"{latest_title} {kw}" for kw in unique_keywords]
+    if combine_skills_with_or:
+        # Quote multi-word skills so job boards (LinkedIn, Indeed) preserve
+        # Boolean precedence (e.g. "Distributed Systems" vs Distributed Systems).
+        formatted_kws = []
+        for kw in unique_keywords:
+            raw_kw = kw.strip('"')
+            formatted_kws.append(f'"{raw_kw}"' if " " in raw_kw else raw_kw)
+        if len(formatted_kws) == 1:
+            queries = [f"{latest_title} {formatted_kws[0]}"]
+        else:
+            skills_clause = " OR ".join(formatted_kws)
+            queries = [f"{latest_title} ({skills_clause})"]
+    else:
+        # Pair latest job position with individual tech skills to target niche,
+        # stack-specific job postings (legacy multi-query mode).
+        queries = [f"{latest_title} {kw}" for kw in unique_keywords]
+
     logger.info("Auto-generated %d search queries: %s", len(queries), queries)
     return queries
 
@@ -820,6 +841,7 @@ def run_scraper(
     job_type_override: str | None = None,
     hours_old_override: int | None = None,
     results_wanted_override: int | None = None,
+    combine_skills_override: bool | None = None,
 ) -> None:
     """Main execution function for the job scraper bot.
 
@@ -833,6 +855,7 @@ def run_scraper(
         job_type_override: Optional job type override to ignore settings.
         hours_old_override: Optional hours old override to ignore settings.
         results_wanted_override: Optional results wanted override to ignore settings.
+        combine_skills_override: Optional combine skills override to ignore settings.
     """
     logger.info("Loading settings from: %s", settings_path)
     settings = load_settings(settings_path)
@@ -885,7 +908,16 @@ def run_scraper(
     )
 
     # 4. Generate queries by passing the loaded Resume object
-    queries = generate_queries(resume, settings.custom_queries)
+    combine_skills = (
+        combine_skills_override
+        if combine_skills_override is not None
+        else settings.search.combine_skills_with_or
+    )
+    queries = generate_queries(
+        resume,
+        settings.custom_queries,
+        combine_skills_with_or=combine_skills,
+    )
 
     # 5. Extract scraper settings
     platforms = settings.search.platforms

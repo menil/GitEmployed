@@ -102,16 +102,48 @@ def test_generate_queries_resume_driven() -> None:
         MagicMock(keywords=["Kubernetes", "AWS", " FastAPI "]),
     ]
 
+    # Test combine_skills_with_or=True (default)
     queries = generate_queries(mock_resume, None)
+    assert queries == [
+        "Senior Python Developer (FastAPI OR Docker OR Git OR Kubernetes OR AWS)"
+    ]
 
-    expected = [
+    # Test single keyword combined without parentheses
+    single_skill_resume = MagicMock()
+    single_skill_resume.work = [MagicMock(position="Senior Python Developer")]
+    single_skill_resume.skills = [MagicMock(keywords=["FastAPI"])]
+    assert generate_queries(single_skill_resume, None) == [
+        "Senior Python Developer FastAPI"
+    ]
+
+    # Test multi-word skills double-quoted in Boolean OR clause
+    # (preventing double-quoting)
+    multi_word_resume = MagicMock()
+    multi_word_resume.work = [MagicMock(position="Staff Engineer")]
+    multi_word_resume.skills = [
+        MagicMock(keywords=['"Distributed Systems"', "Python", "Cloud Architecture"])
+    ]
+    assert generate_queries(multi_word_resume, None) == [
+        'Staff Engineer ("Distributed Systems" OR Python OR "Cloud Architecture")'
+    ]
+
+    single_multi_word_resume = MagicMock()
+    single_multi_word_resume.work = [MagicMock(position="Staff Engineer")]
+    single_multi_word_resume.skills = [MagicMock(keywords=['"Machine Learning"'])]
+    assert generate_queries(single_multi_word_resume, None) == [
+        'Staff Engineer "Machine Learning"'
+    ]
+
+    # Test combine_skills_with_or=False (legacy individual queries)
+    legacy_queries = generate_queries(mock_resume, None, combine_skills_with_or=False)
+    expected_legacy = [
         "Senior Python Developer FastAPI",
         "Senior Python Developer Docker",
         "Senior Python Developer Git",
         "Senior Python Developer Kubernetes",
         "Senior Python Developer AWS",
     ]
-    assert queries == expected
+    assert legacy_queries == expected_legacy
 
 
 def test_generate_queries_resume_driven_fallback() -> None:
@@ -540,6 +572,7 @@ def test_run_scraper_overrides(
         job_type_override="contract",
         hours_old_override=48,
         results_wanted_override=30,
+        combine_skills_override=False,
     )
 
     # Check that mock_scrape_jobs was called with overridden parameters
@@ -568,6 +601,7 @@ def test_run_scraper_overrides(
         "72",
         "--results-wanted",
         "60",
+        "--combine-skills",
         "--dry-run",
     ],
 )
@@ -584,6 +618,32 @@ def test_scrape_cli_args(mock_run_scraper) -> None:
         job_type_override="parttime",
         hours_old_override=72,
         results_wanted_override=60,
+        combine_skills_override=True,
+    )
+
+
+@patch("gitemployed.cli.scrape.run_scraper")
+@patch(
+    "sys.argv",
+    [
+        "scrape.py",
+        "--no-combine-skills",
+    ],
+)
+def test_scrape_cli_no_combine_skills(mock_run_scraper) -> None:
+    """Verify scrape.py CLI parses --no-combine-skills correctly."""
+    from gitemployed.cli.scrape import main as cli_main
+
+    cli_main()
+    mock_run_scraper.assert_called_once_with(
+        settings_path="config/settings.yaml",
+        resume_path="resumes/resume.yaml",
+        dry_run=False,
+        work_preference_override=None,
+        job_type_override=None,
+        hours_old_override=None,
+        results_wanted_override=None,
+        combine_skills_override=False,
     )
 
 
@@ -609,6 +669,7 @@ def test_scrape_cli_short_args(mock_run_scraper) -> None:
         job_type_override=None,
         hours_old_override=None,
         results_wanted_override=40,
+        combine_skills_override=None,
     )
 
 

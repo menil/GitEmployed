@@ -69,6 +69,12 @@ def main() -> None:
         default=None,
         help="Override job search results wanted count.",
     )
+    parser.add_argument(
+        "--combine-skills",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Combine resume skills into a single Boolean OR query.",
+    )
 
     args = parser.parse_args()
 
@@ -88,6 +94,7 @@ def main() -> None:
             job_type_override=args.job_type,
             hours_old_override=args.hours_old,
             results_wanted_override=args.results_wanted,
+            combine_skills_override=args.combine_skills,
         )
     except Exception as e:
         logger = logging.getLogger("scrape")
