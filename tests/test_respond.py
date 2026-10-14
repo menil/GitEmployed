@@ -96,6 +96,7 @@ class FakeGitHubClient:
     ):
         self.labels = list(labels or [])
         self.comments = list(comments or [])
+        self.issues_list: list[dict[str, Any]] = []
         self.posted_comments: list[tuple[int, str]] = []
         self.added_labels: list[tuple[int, list[str]]] = []
         self.removed_labels: list[tuple[int, str]] = []
@@ -109,7 +110,12 @@ class FakeGitHubClient:
     def list_comments(
         self, issue_number: int, per_page: int = 100, page: int | None = None
     ) -> list[dict]:
+        if isinstance(self.comments, dict):
+            return list(self.comments.get(issue_number, []))
         return [{"id": i, "body": body} for i, body in enumerate(self.comments)]
+
+    def list_issues(self, **kwargs: Any) -> list[dict[str, Any]]:
+        return list(self.issues_list)
 
     def post_comment(self, issue_number: int, body: str) -> dict:
         self.posted_comments.append((issue_number, body))
@@ -1487,3 +1493,429 @@ def test_main_client_init_failure_exits_1(
         respond.main()
     assert exc_info.value.code == 1
     assert "Failed to initialize GitHubClient: bad repo" in caplog.text
+
+
+def test_is_comment_already_responded() -> None:
+    bot_logins = {"github-actions[bot]"}
+
+    # Empty comments
+    assert not respond.is_comment_already_responded([], 123, bot_logins)
+
+    # Trigger comment None: inspects latest comment
+    assert not respond.is_comment_already_responded(
+        [{"id": 1, "body": "hello", "user": {"type": "User", "login": "alice"}}],
+        None,
+        bot_logins,
+    )
+    assert respond.is_comment_already_responded(
+        [{"id": 1, "body": "hello", "user": {"type": "Bot", "login": "some-bot"}}],
+        None,
+        bot_logins,
+    )
+    assert respond.is_comment_already_responded(
+        [
+            {
+                "id": 1,
+                "body": "<!-- gitemployed:status-update --> applied",
+                "user": {"type": "User", "login": "alice"},
+            }
+        ],
+        None,
+        bot_logins,
+    )
+
+    # Trigger comment not found
+    assert not respond.is_comment_already_responded(
+        [{"id": 1, "body": "hello", "user": {"type": "User", "login": "alice"}}],
+        999,
+        bot_logins,
+    )
+
+    # Trigger comment followed by human comment
+    thread = [
+        {"id": 10, "body": "applied", "user": {"type": "User", "login": "alice"}},
+        {
+            "id": 11,
+            "body": "more info",
+            "user": {"type": "User", "login": "alice"},
+        },
+    ]
+    assert not respond.is_comment_already_responded(thread, 10, bot_logins)
+
+    # Trigger comment followed by bot comment
+    thread_with_bot = [
+        {"id": 10, "body": "applied", "user": {"type": "User", "login": "alice"}},
+        {
+            "id": 11,
+            "body": "Got it!",
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+        },
+    ]
+    assert respond.is_comment_already_responded(thread_with_bot, 10, bot_logins)
+
+    # Trigger comment followed by automation marker
+    thread_with_marker = [
+        {"id": 10, "body": "applied", "user": {"type": "User", "login": "alice"}},
+        {
+            "id": 11,
+            "body": "<!-- gitemployed:status-update --> Done",
+            "user": {"type": "User", "login": "agent-user"},
+        },
+    ]
+    assert respond.is_comment_already_responded(thread_with_marker, 10, bot_logins)
+
+
+def test_handle_comment_event_skips_when_already_responded(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    gh = FakeGitHubClient()
+    gh.comments = {
+        42: [
+            {"id": 100, "body": "applied", "user": {"type": "User", "login": "alice"}},
+            {
+                "id": 101,
+                "body": "<!-- gitemployed:status-update --> Confirmed",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+        ]
+    }
+    event = comment_event(body="applied")
+    event["issue"]["number"] = 42
+    event["comment"]["id"] = 100
+
+    caplog.set_level(logging.INFO)
+    with patch("gitemployed.cli.respond.run_agent") as mock_agent:
+        respond.handle_comment_event(
+            event,
+            gh_client=gh,
+            web_client=MagicMock(),
+            llm_client=MagicMock(),
+            settings=sample_settings(),
+            resume=sample_resume(),
+            repo_path=Path("/repo"),
+            bot_logins={"github-actions[bot]"},
+        )
+    mock_agent.assert_not_called()
+    assert "already has a bot response following comment 100" in caplog.text
+
+
+def test_drain_pending_issues_processes_waiting_human_comment() -> None:
+    gh = FakeGitHubClient()
+    gh.issues_list = [
+        {
+            "number": 1,
+            "title": "Engineer at Acme",
+            "body": "details",
+            "labels": [{"name": "ready-to-apply"}],
+        },
+        {
+            "number": 2,
+            "title": "PR issue",
+            "pull_request": {},
+            "body": "pr details",
+        },
+        {
+            "number": 3,
+            "title": "Already answered",
+            "body": "details",
+        },
+    ]
+    gh.comments = {
+        1: [
+            {
+                "id": 201,
+                "body": "applied yesterday",
+                "user": {"type": "User", "login": "candidate"},
+            }
+        ],
+        3: [
+            {
+                "id": 301,
+                "body": "applied",
+                "user": {"type": "User", "login": "candidate"},
+            },
+            {
+                "id": 302,
+                "body": "<!-- gitemployed:status-update --> Confirmed",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            },
+        ],
+    }
+
+    with (
+        patch("gitemployed.cli.respond.handle_comment_event") as mock_handle,
+        patch.object(gh, "list_issues", return_value=gh.issues_list),
+    ):
+        processed = respond.drain_pending_issues(
+            gh_client=gh,
+            web_client=MagicMock(),
+            llm_client=MagicMock(),
+            settings=sample_settings(),
+            resume=sample_resume(),
+            repo_path=Path("/repo"),
+            bot_logins={"github-actions[bot]"},
+            exclude_issue_numbers={99},
+        )
+
+    assert processed == 1
+    mock_handle.assert_called_once()
+    event_arg = mock_handle.call_args.args[0]
+    assert event_arg["issue"]["number"] == 1
+    assert event_arg["comment"]["id"] == 201
+
+
+def test_drain_pending_issues_handles_errors_and_limits(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    gh = FakeGitHubClient()
+    # List issues failure returns 0
+    with patch.object(gh, "list_issues", side_effect=RuntimeError("API down")):
+        assert (
+            respond.drain_pending_issues(
+                gh_client=gh,
+                web_client=MagicMock(),
+                llm_client=MagicMock(),
+                settings=sample_settings(),
+                resume=sample_resume(),
+                repo_path=Path("/repo"),
+                bot_logins=set(),
+            )
+            == 0
+        )
+    assert "Failed to list issues for queue draining" in caplog.text
+
+    # Exception during processing posts diagnostic comment
+    gh.issues_list = [
+        {
+            "number": 5,
+            "title": "Engineer at Acme",
+            "body": "details",
+            "comments": 1,
+        }
+    ]
+    gh.comments = {
+        5: [
+            {
+                "id": 501,
+                "body": "what is salary?",
+                "user": {"type": "User", "login": "candidate"},
+            }
+        ]
+    }
+    with (
+        patch.object(gh, "list_issues", return_value=gh.issues_list),
+        patch(
+            "gitemployed.cli.respond.handle_comment_event",
+            side_effect=RuntimeError("Agent exploded with ghp_12345678901234567890"),
+        ),
+        patch.object(gh, "post_comment") as mock_post,
+    ):
+        assert (
+            respond.drain_pending_issues(
+                gh_client=gh,
+                web_client=MagicMock(),
+                llm_client=MagicMock(),
+                settings=sample_settings(),
+                resume=sample_resume(),
+                repo_path=Path("/repo"),
+                bot_logins=set(),
+            )
+            == 0
+        )
+    mock_post.assert_called_once()
+    diagnostic_body = mock_post.call_args.args[1]
+    assert STATUS_CONFIRMATION_MARKER in diagnostic_body
+    assert "[redacted-token]" in diagnostic_body
+    assert "ghp_12345678901234567890" not in diagnostic_body
+
+
+def test_drain_pending_issues_fast_skips_zero_comments() -> None:
+    gh = FakeGitHubClient()
+    gh.issues_list = [
+        {
+            "number": 10,
+            "title": "Zero Comments Issue",
+            "comments": 0,
+        }
+    ]
+    with (
+        patch.object(gh, "list_issues", return_value=gh.issues_list),
+        patch.object(gh, "list_comments") as mock_list_comments,
+    ):
+        processed = respond.drain_pending_issues(
+            gh_client=gh,
+            web_client=MagicMock(),
+            llm_client=MagicMock(),
+            settings=sample_settings(),
+            resume=sample_resume(),
+            repo_path=Path("/repo"),
+            bot_logins=set(),
+        )
+    assert processed == 0
+    mock_list_comments.assert_not_called()
+
+
+def test_drain_pending_issues_respects_max_drain_and_exclusion() -> None:
+    gh = FakeGitHubClient()
+    gh.issues_list = [
+        {"number": 1, "comments": 1},
+        {"number": 2, "comments": 1},
+        {"number": 3, "comments": 1},
+    ]
+    gh.comments = {
+        1: [{"id": 10, "body": "q1", "user": {"type": "User", "login": "alice"}}],
+        2: [{"id": 20, "body": "q2", "user": {"type": "User", "login": "alice"}}],
+        3: [{"id": 30, "body": "q3", "user": {"type": "User", "login": "alice"}}],
+    }
+    with (
+        patch.object(gh, "list_issues", return_value=gh.issues_list),
+        patch("gitemployed.cli.respond.handle_comment_event") as mock_handle,
+    ):
+        processed = respond.drain_pending_issues(
+            gh_client=gh,
+            web_client=MagicMock(),
+            llm_client=MagicMock(),
+            settings=sample_settings(),
+            resume=sample_resume(),
+            repo_path=Path("/repo"),
+            bot_logins=set(),
+            exclude_issue_numbers={1},
+            max_drain=1,
+        )
+    assert processed == 1
+    assert mock_handle.call_count == 1
+    # Issue #1 was excluded, so issue #2 was processed, and max_drain stopped at 1
+    assert mock_handle.call_args.args[0]["issue"]["number"] == 2
+
+
+def test_drain_pending_issues_partial_failure_continues() -> None:
+    gh = FakeGitHubClient()
+    gh.issues_list = [
+        {"number": 1, "comments": 1},
+        {"number": 2, "comments": 1},
+    ]
+    gh.comments = {
+        1: [{"id": 10, "body": "q1", "user": {"type": "User", "login": "alice"}}],
+        2: [{"id": 20, "body": "q2", "user": {"type": "User", "login": "alice"}}],
+    }
+
+    def side_effect(event: dict[str, Any], **kwargs: Any) -> None:
+        if event["issue"]["number"] == 1:
+            raise RuntimeError("Issue 1 failure")
+
+    with (
+        patch.object(gh, "list_issues", return_value=gh.issues_list),
+        patch(
+            "gitemployed.cli.respond.handle_comment_event",
+            side_effect=side_effect,
+        ),
+        patch.object(gh, "post_comment") as mock_post,
+    ):
+        processed = respond.drain_pending_issues(
+            gh_client=gh,
+            web_client=MagicMock(),
+            llm_client=MagicMock(),
+            settings=sample_settings(),
+            resume=sample_resume(),
+            repo_path=Path("/repo"),
+            bot_logins=set(),
+        )
+    assert processed == 1
+    mock_post.assert_called_once()
+    assert mock_post.call_args.args[0] == 1
+
+
+def test_handle_comment_event_uses_preloaded_comments() -> None:
+    gh = FakeGitHubClient()
+    event = comment_event(body="Can we talk about compensation?")
+    preloaded = [
+        {
+            "id": 1,
+            "body": "Can we talk about compensation?",
+            "user": {"type": "User", "login": "alice"},
+        }
+    ]
+    with (
+        patch.object(gh, "list_comments") as mock_list_comments,
+        patch("gitemployed.cli.respond.run_agent") as mock_agent,
+    ):
+        mock_agent.return_value = AgentAction(action="reply", reply="Sure!")
+        respond.handle_comment_event(
+            event,
+            gh_client=gh,
+            web_client=MagicMock(),
+            llm_client=MagicMock(),
+            settings=sample_settings(),
+            resume=sample_resume(),
+            repo_path=Path("/repo"),
+            bot_logins=set(),
+            preloaded_comments=preloaded,
+        )
+    mock_list_comments.assert_not_called()
+    assert len(gh.posted_comments) == 1
+
+
+def test_main_drain_mode_without_event_path(tmp_path: Path) -> None:
+    gh = FakeGitHubClient()
+    with (
+        patch.dict(os.environ, DEFAULT_ENV, clear=True),
+        patch(
+            "sys.argv",
+            ["respond.py", "--drain", "--repo-path", str(tmp_path)],
+        ),
+        patch("gitemployed.cli.respond.load_settings", return_value=sample_settings()),
+        patch("gitemployed.cli.respond.load_resume", return_value=sample_resume()),
+        patch("gitemployed.cli.respond.GitHubClient", return_value=gh),
+        patch("gitemployed.cli.respond.WebClient", return_value=MagicMock()),
+        patch("gitemployed.cli.respond.get_llm_client", return_value=MagicMock()),
+        patch(
+            "gitemployed.cli.respond.drain_pending_issues", return_value=2
+        ) as mock_drain,
+    ):
+        respond.main()
+
+    mock_drain.assert_called_once()
+
+
+def test_main_event_failure_with_drain_continues_and_exits_1(
+    tmp_path: Path,
+) -> None:
+    gh = FakeGitHubClient()
+    event_file = tmp_path / "event.json"
+    event_payload = comment_event(body="hello")
+    event_file.write_text(json.dumps(event_payload), encoding="utf-8")
+
+    with (
+        patch.dict(os.environ, DEFAULT_ENV, clear=True),
+        patch(
+            "sys.argv",
+            [
+                "respond.py",
+                "--event-path",
+                str(event_file),
+                "--drain",
+                "--repo-path",
+                str(tmp_path),
+            ],
+        ),
+        patch("gitemployed.cli.respond.load_settings", return_value=sample_settings()),
+        patch("gitemployed.cli.respond.load_resume", return_value=sample_resume()),
+        patch("gitemployed.cli.respond.GitHubClient", return_value=gh),
+        patch("gitemployed.cli.respond.WebClient", return_value=MagicMock()),
+        patch("gitemployed.cli.respond.get_llm_client", return_value=MagicMock()),
+        patch(
+            "gitemployed.cli.respond.handle_comment_event",
+            side_effect=RuntimeError("Primary event failed"),
+        ),
+        patch.object(gh, "post_comment") as mock_post,
+        patch(
+            "gitemployed.cli.respond.drain_pending_issues", return_value=1
+        ) as mock_drain,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        respond.main()
+
+    assert exc_info.value.code == 1
+    mock_post.assert_called_once()
+    assert "Primary event failed" in mock_post.call_args.args[1]
+    mock_drain.assert_called_once()
