@@ -1305,36 +1305,29 @@ def run_scraper(
                         fetched_desc = fetch_description_fn(job)
                         if fetched_desc:
                             job.description = fetched_desc
-                        else:
-                            logger.info(
-                                "No enriched description retrieved for [%s] %s; "
-                                "proceeding with basic listing.",
-                                job.company,
-                                job.title,
-                            )
                         # Polite jitter delay between successive on-demand fetches
                         time.sleep(random.uniform(0.5, 1.0))
 
+                        # Without a description triage has nothing to score, so
+                        # don't file the issue. The job is not recorded in the
+                        # dedup store, which lets a later run retry the fetch
+                        # (LinkedIn 429s are usually transient).
+                        if is_missing_description(job.description):
+                            logger.info(
+                                "No description retrieved for [%s] %s; "
+                                "skipping so a later run can retry.",
+                                job.company,
+                                job.title,
+                            )
+                            continue
+
                     # Filter by work preference type (now with full description).
                     # Onsite and hybrid are mutually compatible as both are local
-                    # office-based. Preserve remote classification if query was
-                    # remote and description enrichment failed, provided location
-                    # is not onsite/hybrid.
+                    # office-based.
                     job_work_type = classify_work_type(job.location, job.description)
-                    missing_desc = is_missing_description(job.description)
-                    remote_fallback = (
-                        work_preference == "remote"
-                        and missing_desc
-                        and "onsite" not in job.location.lower()
-                        and "hybrid" not in job.location.lower()
-                    )
-                    is_match = (
-                        job_work_type == work_preference
-                        or (
-                            work_preference in ("onsite", "hybrid")
-                            and job_work_type in ("onsite", "hybrid")
-                        )
-                        or remote_fallback
+                    is_match = job_work_type == work_preference or (
+                        work_preference in ("onsite", "hybrid")
+                        and job_work_type in ("onsite", "hybrid")
                     )
 
                     if not is_match:
