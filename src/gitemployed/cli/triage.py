@@ -145,6 +145,18 @@ CANONICAL_BODY_TEMPLATE = (
 )
 
 
+# Applied when a job has no description to evaluate. It is deliberately not a
+# lifecycle label (see status_model), so it never maps to a board column.
+NEEDS_DESCRIPTION_LABEL = "needs-description"
+
+_NEEDS_DESCRIPTION_INSTRUCTIONS = (
+    "No fit score was assigned. The issue is left open and labeled "
+    f"`{NEEDS_DESCRIPTION_LABEL}`. Please double-check the apply URL or "
+    "paste the job description under `## Job Description`, then re-label "
+    "with `triage-pending`."
+)
+
+
 class JobFetchError(Exception):
     """Raised when a job posting URL cannot be fetched or yields no content."""
 
@@ -465,18 +477,54 @@ def post_fetch_failure_comment(
 ) -> None:
     """Post a clear explanation when a job URL cannot be fetched.
 
-    The issue is intentionally left open and unlabeled so a human can fix the
-    URL or paste the description; triage never auto-closes on a fetch failure.
+    The issue is intentionally left open so a human can fix the URL or paste
+    the description; triage never auto-closes on a fetch failure.
     """
     comment_body = (
         "### AI Triage: Could Not Fetch Job Posting\n\n"
         f"I couldn't fetch the job posting at `{url}` to evaluate it:\n"
         f"```\n{error}\n```\n"
-        "The issue is left open and unlabeled. Please double-check the apply "
-        "URL or paste the job description directly, then re-label with "
-        "`triage-pending`."
+        f"{_NEEDS_DESCRIPTION_INSTRUCTIONS}"
     )
     gh_client.post_comment(issue_number, comment_body)
+
+
+def flag_needs_description(
+    issue_number: int, gh_client: GitHubClient, issue_labels: list[str]
+) -> None:
+    """Park an issue that has no description to score.
+
+    ``triage-pending`` is removed so batch triage and the label-triggered
+    workflow do not retry (and re-comment) on every run; the user re-adds it
+    after supplying a description, and a later successful triage clears
+    ``needs-description`` itself. It must be removed *before*
+    ``needs-description`` is added: the ``labeled`` event for the new label
+    would otherwise fire ``triage-issue.yml`` while ``triage-pending`` is
+    still present.
+
+    Callers run this before commenting so a labeling failure never leaves a
+    comment behind that a rerun would duplicate.
+
+    Raises:
+        Exception: Whatever the label API raised, after restoring
+            ``triage-pending`` so the issue is never left with neither label.
+    """
+    removed = "triage-pending" in issue_labels
+    if removed:
+        gh_client.remove_label(issue_number, "triage-pending")
+    try:
+        gh_client.add_labels(issue_number, [NEEDS_DESCRIPTION_LABEL])
+    except Exception:
+        if removed:
+            try:
+                gh_client.add_labels(issue_number, ["triage-pending"])
+            except Exception as restore_error:
+                logger.error(
+                    "Could not restore triage-pending on issue #%d: %s",
+                    issue_number,
+                    restore_error,
+                )
+        raise
 
 
 def get_category_mismatch_labels(triage_res: TriageResult) -> list[str]:
@@ -980,6 +1028,7 @@ def run_triage(
             logger.warning(
                 "Could not fetch job posting for issue #%d: %s", issue_number, e
             )
+            flag_needs_description(issue_number, gh_client, issue_labels)
             post_fetch_failure_comment(issue_number, gh_client, apply_url, str(e))
             return
         if placeholder_description:
@@ -999,6 +1048,22 @@ def run_triage(
             mask_value(job_details["role"]),
             mask_value(job_details["company"]),
         )
+
+    # Without a real description the model has nothing to evaluate and tends to
+    # hand out inflated default scores, so never score in that case.
+    if is_missing_description(job_details["description"]):
+        logger.warning("Issue #%d has no job description; not scoring.", issue_number)
+        flag_needs_description(issue_number, gh_client, issue_labels)
+        gh_client.post_comment(
+            issue_number,
+            "### AI Triage: No Job Description\n\n"
+            "This issue has no job description to evaluate. "
+            f"{_NEEDS_DESCRIPTION_INSTRUCTIONS}",
+        )
+        return
+
+    if NEEDS_DESCRIPTION_LABEL in issue_labels:
+        gh_client.remove_label(issue_number, NEEDS_DESCRIPTION_LABEL)
 
     # 2. Triage evaluation
     logger.info("Evaluating job description with LLM...")
