@@ -22,6 +22,7 @@ from gitemployed.cli.triage import (
     build_canonical_body,
     extract_job_from_url,
     fetch_job_page,
+    flag_needs_description,
     get_category_mismatch_labels,
     get_fit_grade_label,
     get_resume_filenames,
@@ -1041,7 +1042,7 @@ def test_run_triage_placeholder_description_fetches_apply_url(
                 "No job description provided."
             ),
             issue_node_id="node_abc",
-            issue_labels=["triage-pending"],
+            issue_labels=["triage-pending", "needs-description"],
             repo_path=pathlib.Path(),
             gh_client=mock_gh_client,
             settings=mock_settings,
@@ -1051,6 +1052,8 @@ def test_run_triage_placeholder_description_fetches_apply_url(
         )
 
     web_client.fetch_url.assert_called_once_with("https://acme.com/jobs/123")
+    # A previously parked issue sheds the label once a description is found.
+    mock_gh_client.remove_label.assert_any_call(32, "needs-description")
     mock_llm_client.extract_job_details.assert_not_called()
     assert (
         mock_llm_client.triage_job.call_args[0][0]
@@ -1091,6 +1094,99 @@ def test_run_triage_placeholder_description_fetch_failure_no_score(
 
     mock_llm_client.triage_job.assert_not_called()
     mock_gh_client.post_comment.assert_called_once()
+    mock_gh_client.add_labels.assert_called_once_with(33, ["needs-description"])
+
+
+def test_flag_needs_description_restores_triage_pending_on_add_failure() -> None:
+    """A failed label add must not leave the issue with neither label."""
+    mock_gh_client = mock.MagicMock(spec=GitHubClient)
+    mock_gh_client.add_labels.side_effect = [RuntimeError("boom"), None]
+
+    with pytest.raises(RuntimeError, match="boom"):
+        flag_needs_description(40, mock_gh_client, ["triage-pending"])
+
+    mock_gh_client.remove_label.assert_called_once_with(40, "triage-pending")
+    assert mock_gh_client.add_labels.call_args_list == [
+        mock.call(40, ["needs-description"]),
+        mock.call(40, ["triage-pending"]),
+    ]
+
+
+def test_flag_needs_description_skips_removal_when_not_pending() -> None:
+    mock_gh_client = mock.MagicMock(spec=GitHubClient)
+
+    flag_needs_description(41, mock_gh_client, [])
+
+    mock_gh_client.remove_label.assert_not_called()
+    mock_gh_client.add_labels.assert_called_once_with(41, ["needs-description"])
+
+
+def test_run_triage_label_failure_posts_no_comment(
+    mock_resume: Resume,
+    mock_settings: Settings,
+) -> None:
+    """Labeling happens before commenting, so a failure cannot duplicate it."""
+    mock_llm_client = mock.MagicMock(spec=LLMClient)
+    mock_gh_client = mock.MagicMock(spec=GitHubClient)
+    mock_gh_client.repo = "my-owner/my-repo"
+    mock_gh_client.remove_label.side_effect = RuntimeError("api down")
+
+    with pytest.raises(RuntimeError, match="api down"):
+        run_triage(
+            issue_number=42,
+            issue_title="[Acme] Engineer",
+            issue_body=(
+                "**Company:** Acme\n**Role:** Engineer\n"
+                "\n## Job Description\nNo job description provided."
+            ),
+            issue_node_id="node_abc",
+            issue_labels=["triage-pending"],
+            repo_path=pathlib.Path(),
+            gh_client=mock_gh_client,
+            settings=mock_settings,
+            resume=mock_resume,
+            llm_client=mock_llm_client,
+            web_client=None,
+        )
+
+    mock_gh_client.post_comment.assert_not_called()
+
+
+def test_run_triage_no_description_and_no_url_is_not_scored(
+    mock_resume: Resume,
+    mock_settings: Settings,
+) -> None:
+    """A placeholder issue with no usable URL is parked, never scored."""
+    mock_llm_client = mock.MagicMock(spec=LLMClient)
+    mock_gh_client = mock.MagicMock(spec=GitHubClient)
+    mock_gh_client.repo = "my-owner/my-repo"
+
+    run_triage(
+        issue_number=34,
+        issue_title="[Acme] Engineer",
+        issue_body=(
+            "**Company:** Acme\n"
+            "**Role:** Engineer\n"
+            "\n## Job Description\n"
+            "No job description provided."
+        ),
+        issue_node_id="node_abc",
+        issue_labels=["triage-pending"],
+        repo_path=pathlib.Path(),
+        gh_client=mock_gh_client,
+        settings=mock_settings,
+        resume=mock_resume,
+        llm_client=mock_llm_client,
+        web_client=None,
+    )
+
+    mock_llm_client.triage_job.assert_not_called()
+    mock_llm_client.tailor_resume.assert_not_called()
+    comment_arg = mock_gh_client.post_comment.call_args[0][1]
+    assert "No Job Description" in comment_arg
+    mock_gh_client.remove_label.assert_called_once_with(34, "triage-pending")
+    mock_gh_client.add_labels.assert_called_once_with(34, ["needs-description"])
+    mock_gh_client.close_issue.assert_not_called()
 
 
 def test_run_triage_fetch_failure_no_close(
@@ -1134,10 +1230,10 @@ def test_run_triage_fetch_failure_no_close(
     assert "https://acme.com/jobs/123" in comment_arg
     assert "Blocked: private address" in comment_arg
 
-    # Issue stays open and unlabeled: no close, no label changes, no triage.
+    # Issue stays open, is parked as needs-description and is not scored.
     mock_gh_client.close_issue.assert_not_called()
-    mock_gh_client.add_labels.assert_not_called()
-    mock_gh_client.remove_label.assert_not_called()
+    mock_gh_client.add_labels.assert_called_once_with(31, ["needs-description"])
+    mock_gh_client.remove_label.assert_called_once_with(31, "triage-pending")
     mock_gh_client.update_project_status.assert_not_called()
     mock_llm_client.triage_job.assert_not_called()
     mock_llm_client.extract_job_details.assert_not_called()
