@@ -16,6 +16,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
+import requests
+from bs4 import BeautifulSoup
+from markdownify import markdownify as md
 
 from gitemployed import (
     GitHubClient,
@@ -637,6 +640,21 @@ APPLY_URL_PATTERN = re.compile(
 )
 
 
+def _is_linkedin_url(url: Any) -> bool:
+    """Check if a URL belongs to LinkedIn."""
+    clean = _clean_str(url)
+    if not clean:
+        return False
+    try:
+        if "://" not in clean and not clean.startswith("//"):
+            clean = f"//{clean}"
+        parsed = urllib.parse.urlparse(clean)
+        hostname = (parsed.hostname or "").lower()
+        return hostname == "linkedin.com" or hostname.endswith(".linkedin.com")
+    except (ValueError, AttributeError):
+        return False
+
+
 def normalize_job_url(url: Any) -> str:
     """Normalize a job URL by removing tracking query params and standardizing host.
 
@@ -656,13 +674,14 @@ def normalize_job_url(url: Any) -> str:
     # Check for LinkedIn job ID pattern
     # e.g., /jobs/view/4421986211, /jobs/view/slug-4421986211,
     # or currentJobId=4421986211
-    li_match = LINKEDIN_JOB_ID_PATTERN.search(clean)
-    if li_match:
-        return f"https://linkedin.com/jobs/view/{li_match.group(1)}"
+    if _is_linkedin_url(clean):
+        li_match = LINKEDIN_JOB_ID_PATTERN.search(clean)
+        if li_match:
+            return f"https://linkedin.com/jobs/view/{li_match.group(1)}"
 
-    li_param = LINKEDIN_CURRENT_JOB_ID_PATTERN.search(clean)
-    if li_param:
-        return f"https://linkedin.com/jobs/view/{li_param.group(1)}"
+        li_param = LINKEDIN_CURRENT_JOB_ID_PATTERN.search(clean)
+        if li_param:
+            return f"https://linkedin.com/jobs/view/{li_param.group(1)}"
 
     # Check for Indeed job key jk=...
     indeed_match = INDEED_JK_PATTERN.search(clean)
@@ -831,6 +850,113 @@ def publish_job(
     return issue
 
 
+def fetch_linkedin_description(
+    job_url: str,
+    session: requests.Session | None = None,
+    timeout: float = 10.0,
+) -> str | None:
+    """Fetch and parse full description from a LinkedIn job posting URL.
+
+    Args:
+        job_url: Raw or normalized LinkedIn job URL.
+        session: Optional injected requests.Session instance.
+        timeout: Network timeout in seconds.
+
+    Returns:
+        Clean markdown description string, or None if extraction fails.
+    """
+    clean_url = _clean_str(job_url)
+    if not clean_url or not _is_linkedin_url(clean_url):
+        return None
+
+    norm_url = normalize_job_url(clean_url)
+    li_match = LINKEDIN_JOB_ID_PATTERN.search(norm_url)
+    if li_match:
+        job_id = li_match.group(1)
+        target_url = f"https://www.linkedin.com/jobs/view/{job_id}"
+    elif _is_linkedin_url(norm_url):
+        target_url = norm_url
+    else:
+        return None
+
+    req_session = session or requests.Session()
+    close_session = session is None
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        resp = req_session.get(target_url, headers=headers, timeout=timeout)
+        if resp.status_code != 200:
+            logger.warning(
+                "LinkedIn description fetch failed for %s: HTTP %d",
+                target_url,
+                resp.status_code,
+            )
+            return None
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        markup = soup.find(
+            "div", class_=lambda x: x and "show-more-less-html__markup" in x
+        )
+        if not markup:
+            markup = soup.find("div", class_=lambda x: x and "description__text" in x)
+
+        if markup:
+            desc = md(str(markup)).strip()
+            return desc if desc else None
+
+        logger.warning(
+            "LinkedIn description container not found in response for %s",
+            target_url,
+        )
+    except Exception as e:
+        logger.warning(
+            "Error fetching LinkedIn description for %s: %s",
+            target_url,
+            e,
+        )
+        return None
+    finally:
+        if close_session:
+            req_session.close()
+
+    return None
+
+
+def fetch_job_description(
+    job: ScrapedJob,
+    session: requests.Session | None = None,
+    timeout: float = 10.0,
+) -> str | None:
+    """Fetch description on demand for candidate jobs missing one.
+
+    If the job already has a non-empty description, returns it directly.
+    If the job is from LinkedIn and missing a description, fetches it lazily.
+
+    Args:
+        job: ScrapedJob instance.
+        session: Optional injected requests.Session.
+        timeout: Network timeout in seconds.
+
+    Returns:
+        Full description string or None.
+    """
+    if job.description and job.description != "No job description provided.":
+        return job.description
+
+    if job.apply_url and _is_linkedin_url(job.apply_url):
+        return fetch_linkedin_description(
+            job.apply_url, session=session, timeout=timeout
+        )
+
+    return None
+
+
 def run_scraper(
     settings_path: str = "config/settings.yaml",
     resume_path: str = "resumes/resume.yaml",
@@ -842,6 +968,7 @@ def run_scraper(
     hours_old_override: int | None = None,
     results_wanted_override: int | None = None,
     combine_skills_override: bool | None = None,
+    fetch_description_fn: Callable[[ScrapedJob], str | None] | None = None,
 ) -> None:
     """Main execution function for the job scraper bot.
 
@@ -856,6 +983,7 @@ def run_scraper(
         hours_old_override: Optional hours old override to ignore settings.
         results_wanted_override: Optional results wanted override to ignore settings.
         combine_skills_override: Optional combine skills override to ignore settings.
+        fetch_description_fn: Optional injected function to fetch job descriptions.
     """
     logger.info("Loading settings from: %s", settings_path)
     settings = load_settings(settings_path)
@@ -907,7 +1035,17 @@ def run_scraper(
         github_client=None if dry_run else github_client
     )
 
-    # 4. Generate queries by passing the loaded Resume object
+    # 4. Initialize description fetcher
+    desc_session: requests.Session | None = None
+    if fetch_description_fn is None:
+        desc_session = requests.Session()
+
+        def _default_fetch_desc(j: ScrapedJob) -> str | None:
+            return fetch_job_description(j, session=desc_session)
+
+        fetch_description_fn = _default_fetch_desc
+
+    # 5. Generate queries by passing the loaded Resume object
     combine_skills = (
         combine_skills_override
         if combine_skills_override is not None
@@ -919,7 +1057,7 @@ def run_scraper(
         combine_skills_with_or=combine_skills,
     )
 
-    # 5. Extract scraper settings
+    # 6. Extract scraper settings
     platforms = settings.search.platforms
     work_preference = (
         work_preference_override
@@ -995,7 +1133,7 @@ def run_scraper(
         results_wanted,
     )
 
-    # 6. Sequential search loop
+    # 7. Sequential search loop
     for index, query in enumerate(queries):
         logger.info(
             "Executing query (%d/%d): '%s'",
@@ -1006,7 +1144,7 @@ def run_scraper(
         try:
             extra_kwargs: dict[str, Any] = {}
             if "linkedin" in platforms:
-                extra_kwargs["linkedin_fetch_description"] = True
+                extra_kwargs["linkedin_fetch_description"] = False
 
             jobs_df = scrape_fn(
                 site_name=platforms,
@@ -1030,30 +1168,7 @@ def run_scraper(
                 for row in jobs_df.to_dict(orient="records"):
                     job = parse_job_row(row)
 
-                    # Filter by work preference type first (cheap in-memory check)
-                    job_work_type = classify_work_type(job.location, job.description)
-                    is_match = job_work_type == work_preference
-                    # Onsite and hybrid are mutually compatible as both are local
-                    # office-based
-                    if work_preference in ("onsite", "hybrid") and job_work_type in (
-                        "onsite",
-                        "hybrid",
-                    ):
-                        is_match = True
-
-                    if not is_match:
-                        logger.info(
-                            "Skipping role with mismatching work type "
-                            "(got '%s', want '%s'): [%s] %s - Location: %s",
-                            job_work_type,
-                            work_preference,
-                            job.company,
-                            job.title,
-                            job.location,
-                        )
-                        continue
-
-                    # Local proximity check for onsite/hybrid
+                    # Local proximity check for onsite/hybrid (uses location only)
                     if (
                         work_preference in ("onsite", "hybrid")
                         and resume.basics.location
@@ -1074,6 +1189,7 @@ def run_scraper(
                         continue
 
                     # Check for duplicates via CompanyDeduplicationStore
+                    # (uses URL, company, and title only)
                     is_dup, dup_reason = dedup_store.is_duplicate(job)
                     if is_dup:
                         logger.debug(
@@ -1081,6 +1197,66 @@ def run_scraper(
                             dup_reason,
                             job.company,
                             job.title,
+                        )
+                        continue
+
+                    # Lazy fetch description only for candidate jobs
+                    if (
+                        not job.description
+                        or job.description == "No job description provided."
+                    ):
+                        logger.info(
+                            "Fetching description for candidate role: [%s] %s",
+                            job.company,
+                            job.title,
+                        )
+                        fetched_desc = fetch_description_fn(job)
+                        if fetched_desc:
+                            job.description = fetched_desc
+                        else:
+                            logger.info(
+                                "No enriched description retrieved for [%s] %s; "
+                                "proceeding with basic listing.",
+                                job.company,
+                                job.title,
+                            )
+                        # Polite jitter delay between successive on-demand fetches
+                        time.sleep(random.uniform(0.5, 1.0))
+
+                    # Filter by work preference type (now with full description).
+                    # Onsite and hybrid are mutually compatible as both are local
+                    # office-based. Preserve remote classification if query was
+                    # remote and description enrichment failed, provided location
+                    # is not onsite/hybrid.
+                    job_work_type = classify_work_type(job.location, job.description)
+                    missing_desc = (
+                        not job.description
+                        or job.description == "No job description provided."
+                    )
+                    remote_fallback = (
+                        work_preference == "remote"
+                        and missing_desc
+                        and "onsite" not in job.location.lower()
+                        and "hybrid" not in job.location.lower()
+                    )
+                    is_match = (
+                        job_work_type == work_preference
+                        or (
+                            work_preference in ("onsite", "hybrid")
+                            and job_work_type in ("onsite", "hybrid")
+                        )
+                        or remote_fallback
+                    )
+
+                    if not is_match:
+                        logger.info(
+                            "Skipping role with mismatching work type "
+                            "(got '%s', want '%s'): [%s] %s - Location: %s",
+                            job_work_type,
+                            work_preference,
+                            job.company,
+                            job.title,
+                            job.location,
                         )
                         continue
 
@@ -1112,3 +1288,5 @@ def run_scraper(
             time.sleep(delay)
 
     logger.info("Scraper execution completed successfully.")
+    if desc_session is not None:
+        desc_session.close()

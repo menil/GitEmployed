@@ -10,11 +10,14 @@ from gitemployed.github_client import GitHubClientError
 from gitemployed.scraper import (
     CompanyDeduplicationStore,
     ScrapedJob,
+    _is_linkedin_url,
     build_issue_body,
     extract_apply_url,
     extract_job_identifier,
     fetch_company_existing_records,
     fetch_existing_jobs_cache,
+    fetch_job_description,
+    fetch_linkedin_description,
     format_salary,
     generate_queries,
     normalize_job_url,
@@ -584,7 +587,7 @@ def test_run_scraper_overrides(
         job_type="contract",
         hours_old=48,
         results_wanted=30,
-        linkedin_fetch_description=True,
+        linkedin_fetch_description=False,
     )
 
 
@@ -1280,3 +1283,320 @@ def test_run_scraper_company_dedup_distinct_company_creates_issue(
     assert mock_github_client.create_issue.call_count == 1
     _, kwargs = mock_github_client.create_issue.call_args
     assert kwargs["title"] == "[OtherTech Corp] Staff Software Architect"
+
+
+def test_fetch_linkedin_description_success() -> None:
+    """Verify fetch_linkedin_description extracts HTML markup into markdown."""
+    mock_session = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = """
+    <html>
+      <body>
+        <div class="show-more-less-html__markup">
+          <p>We are looking for a <strong>Senior Engineer</strong>.</p>
+          <ul>
+            <li>Python</li>
+            <li>Distributed Systems</li>
+          </ul>
+        </div>
+      </body>
+    </html>
+    """
+    mock_session.get.return_value = mock_resp
+
+    desc = fetch_linkedin_description(
+        "https://linkedin.com/jobs/view/1234567890",
+        session=mock_session,
+    )
+    assert desc is not None
+    assert "Senior Engineer" in desc
+    assert "Python" in desc
+
+
+def test_fetch_linkedin_description_http_error() -> None:
+    """Verify fetch_linkedin_description handles non-200 responses gracefully."""
+    mock_session = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 429
+    mock_session.get.return_value = mock_resp
+
+    desc = fetch_linkedin_description(
+        "https://linkedin.com/jobs/view/1234567890",
+        session=mock_session,
+    )
+    assert desc is None
+
+
+def test_fetch_linkedin_description_fallback_and_missing_markup() -> None:
+    """Verify fallback selector and missing markup handling."""
+    mock_session = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    # Fallback to description__text selector
+    mock_resp.text = """
+    <html>
+      <body>
+        <div class="description__text">
+          <p>Role responsibilities and qualifications.</p>
+        </div>
+      </body>
+    </html>
+    """
+    mock_session.get.return_value = mock_resp
+
+    desc = fetch_linkedin_description(
+        "https://www.linkedin.com/jobs/search/?currentJobId=9876543210",
+        session=mock_session,
+    )
+    assert desc is not None
+    assert "Role responsibilities and qualifications." in desc
+    # Target URL should be canonicalized to /jobs/view/9876543210
+    called_url = mock_session.get.call_args[0][0]
+    assert called_url == "https://www.linkedin.com/jobs/view/9876543210"
+
+    # Missing markup container (e.g. login wall) returns None
+    mock_resp.text = "<html><body><div>Sign In to LinkedIn</div></body></html>"
+    desc_missing = fetch_linkedin_description(
+        "https://linkedin.com/jobs/view/1234567890",
+        session=mock_session,
+    )
+    assert desc_missing is None
+
+
+def test_fetch_linkedin_description_network_exception() -> None:
+    """Verify fetch_linkedin_description catches network exceptions safely."""
+    import requests
+
+    mock_session = MagicMock()
+    mock_session.get.side_effect = requests.RequestException("Connection reset by peer")
+
+    desc = fetch_linkedin_description(
+        "https://linkedin.com/jobs/view/1234567890",
+        session=mock_session,
+    )
+    assert desc is None
+
+
+def test_is_linkedin_url() -> None:
+    """Verify LinkedIn URL validation prevents spoofing and handles subdomains."""
+    assert _is_linkedin_url("https://www.linkedin.com/jobs/view/12345") is True
+    assert _is_linkedin_url("https://linkedin.com/jobs/view/12345") is True
+    assert _is_linkedin_url("https://uk.linkedin.com/jobs/view/12345") is True
+    assert _is_linkedin_url("linkedin.com/jobs/view/12345") is True
+    assert _is_linkedin_url("https://spoofed-linkedin.com/jobs/view/12345") is False
+    assert _is_linkedin_url("https://attacker.com?ref=linkedin.com") is False
+    assert _is_linkedin_url("https://attacker.com/linkedin.com") is False
+    assert _is_linkedin_url("https://linkedin.com.attacker.com") is False
+    assert _is_linkedin_url("https://indeed.com/viewjob?jk=123") is False
+    assert _is_linkedin_url("") is False
+    assert _is_linkedin_url(None) is False
+
+
+def test_fetch_linkedin_description_invalid_or_missing() -> None:
+    """Verify fetch_linkedin_description returns None for invalid or spoofed URLs."""
+    assert fetch_linkedin_description(None) is None
+    assert fetch_linkedin_description("") is None
+    assert fetch_linkedin_description("https://indeed.com/viewjob?jk=123") is None
+    assert (
+        fetch_linkedin_description("https://spoofed-linkedin.com/jobs/view/1234567890")
+        is None
+    )
+    assert fetch_linkedin_description("https://attacker.com?ref=linkedin.com") is None
+
+
+def test_fetch_job_description_already_present() -> None:
+    """Verify fetch_job_description skips network call when description exists."""
+    job = ScrapedJob(
+        company="Acme Corp",
+        title="Engineer",
+        location="Seattle, WA",
+        salary="N/A",
+        source="indeed",
+        apply_url="https://acme.com/apply",
+        description="Existing detailed description.",
+    )
+    mock_session = MagicMock()
+    res = fetch_job_description(job, session=mock_session)
+    assert res == "Existing detailed description."
+    mock_session.get.assert_not_called()
+
+
+def test_fetch_job_description_skips_non_linkedin() -> None:
+    """Verify fetch_job_description skips network fetch for non-LinkedIn URLs."""
+    job = ScrapedJob(
+        company="Acme Corp",
+        title="Engineer",
+        location="Seattle, WA",
+        salary="N/A",
+        source="linkedin",
+        apply_url="https://spoofed-linkedin.com/jobs/view/12345",
+        description="",
+    )
+    mock_session = MagicMock()
+    res = fetch_job_description(job, session=mock_session)
+    assert res is None
+    mock_session.get.assert_not_called()
+
+
+def test_run_scraper_lazy_fetch_skips_duplicates_and_proximity() -> None:
+    """Verify run_scraper only fetches descriptions for candidate jobs."""
+    mock_github_client = MagicMock()
+    mock_github_client.repo = "owner/repo"
+    mock_github_client.project_id = None
+
+    def mock_search(query: str, **kwargs):
+        if "dupcompany" in query.lower():
+            return [
+                {
+                    "title": "[DupCompany] Staff Engineer",
+                    "body": "- **Apply URL:** https://linkedin.com/jobs/view/11111",
+                }
+            ]
+        return []
+
+    mock_github_client.search_issues.side_effect = mock_search
+
+    # 3 mock postings without descriptions:
+    # 1. Duplicate job at DupCompany
+    # 2. Out-of-region job in Dallas, TX (candidate is in Seattle, WA)
+    # 3. Valid candidate job at FreshCompany in Seattle, WA
+    jobs_df = pd.DataFrame(
+        [
+            {
+                "company": "DupCompany",
+                "title": "Staff Engineer",
+                "location": "Seattle, WA",
+                "description": None,
+                "job_url": "https://linkedin.com/jobs/view/11111",
+                "site": "linkedin",
+            },
+            {
+                "company": "FarCompany",
+                "title": "Staff Engineer",
+                "location": "Dallas, TX",
+                "description": None,
+                "job_url": "https://linkedin.com/jobs/view/22222",
+                "site": "linkedin",
+            },
+            {
+                "company": "FreshCompany",
+                "title": "Staff Engineer",
+                "location": "Seattle, WA",
+                "description": None,
+                "job_url": "https://linkedin.com/jobs/view/33333",
+                "site": "linkedin",
+            },
+        ]
+    )
+
+    mock_scrape_jobs = MagicMock(return_value=jobs_df)
+    mock_fetch_desc = MagicMock(
+        return_value="Detailed job description for FreshCompany"
+    )
+
+    mock_settings = MagicMock()
+    mock_settings.search.enabled = True
+    mock_settings.search.work_preference = "hybrid"
+    mock_settings.search.platforms = ["linkedin"]
+    mock_settings.search.job_type = "fulltime"
+    mock_settings.search.hours_old = 48
+    mock_settings.search.results_wanted = 50
+    mock_settings.search.combine_skills_with_or = True
+    mock_settings.custom_queries = ["Staff Engineer"]
+    mock_settings.projects_v2 = None
+
+    mock_resume = MagicMock()
+    mock_resume.basics.location = MagicMock(
+        city="Seattle", state="WA", country_code="US"
+    )
+    mock_resume.skills = []
+
+    with (
+        patch("gitemployed.scraper.load_settings", return_value=mock_settings),
+        patch("gitemployed.scraper.load_resume", return_value=mock_resume),
+        patch("gitemployed.scraper.time.sleep"),
+    ):
+        run_scraper(
+            dry_run=False,
+            github_client=mock_github_client,
+            scrape_fn=mock_scrape_jobs,
+            fetch_description_fn=mock_fetch_desc,
+        )
+
+    # Scrape called with linkedin_fetch_description=False
+    mock_scrape_jobs.assert_called_once()
+    assert mock_scrape_jobs.call_args[1]["linkedin_fetch_description"] is False
+
+    # fetch_description_fn MUST ONLY be called for FreshCompany (Job 3)!
+    assert mock_fetch_desc.call_count == 1
+    called_job = mock_fetch_desc.call_args[0][0]
+    assert called_job.company == "FreshCompany"
+    assert called_job.apply_url == "https://linkedin.com/jobs/view/33333"
+
+    # Only 1 issue created for FreshCompany
+    assert mock_github_client.create_issue.call_count == 1
+    created_title = mock_github_client.create_issue.call_args[1]["title"]
+    assert created_title == "[FreshCompany] Staff Engineer"
+
+
+def test_run_scraper_remote_preserves_preference_when_description_missing() -> None:
+    """Verify remote job is not dropped if description enrichment fails."""
+    mock_github_client = MagicMock()
+    mock_github_client.repo = "owner/repo"
+    mock_github_client.project_id = None
+    mock_github_client.search_issues.return_value = []
+
+    jobs_df = pd.DataFrame(
+        [
+            {
+                "company": "RemoteTech Inc",
+                "title": "Backend Engineer",
+                "location": "United States",
+                "description": None,
+                "job_url": "https://linkedin.com/jobs/view/99999",
+                "site": "linkedin",
+            }
+        ]
+    )
+
+    mock_scrape_jobs = MagicMock(return_value=jobs_df)
+    # Simulate failed description fetch
+    mock_fetch_desc = MagicMock(return_value=None)
+
+    mock_settings = MagicMock()
+    mock_settings.search.enabled = True
+    mock_settings.search.work_preference = "remote"
+    mock_settings.search.platforms = ["linkedin"]
+    mock_settings.search.job_type = "fulltime"
+    mock_settings.search.hours_old = 48
+    mock_settings.search.results_wanted = 50
+    mock_settings.search.combine_skills_with_or = True
+    mock_settings.custom_queries = ["Backend Engineer"]
+    mock_settings.projects_v2 = None
+
+    mock_resume = MagicMock()
+    mock_resume.basics.location = MagicMock(
+        city="Seattle", state="WA", country_code="US"
+    )
+    mock_resume.skills = []
+
+    with (
+        patch("gitemployed.scraper.load_settings", return_value=mock_settings),
+        patch("gitemployed.scraper.load_resume", return_value=mock_resume),
+        patch("gitemployed.scraper.time.sleep"),
+    ):
+        run_scraper(
+            dry_run=False,
+            github_client=mock_github_client,
+            scrape_fn=mock_scrape_jobs,
+            fetch_description_fn=mock_fetch_desc,
+        )
+
+    # Issue must be published despite missing description because it was queried
+    # with is_remote=True
+    assert mock_github_client.create_issue.call_count == 1
+    assert (
+        mock_github_client.create_issue.call_args[1]["title"]
+        == "[RemoteTech Inc] Backend Engineer"
+    )
