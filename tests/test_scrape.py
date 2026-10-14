@@ -390,8 +390,9 @@ def test_run_scraper_success(
     assert 'repo:owner/repo is:issue in:title "[Existing Company]"' in search_queries
     assert 'repo:owner/repo is:issue in:title "[New Company]"' in search_queries
 
-    # Verify only the new job and the NaN-sanitized job were created as issues
-    assert mock_github_client.create_issue.call_count == 2
+    # Only the new job is created; the NaN-sanitized row has no description to
+    # fetch, so it is skipped for a later run to retry.
+    assert mock_github_client.create_issue.call_count == 1
     created_titles = [
         call[1]["title"] for call in mock_github_client.create_issue.call_args_list
     ]
@@ -1590,8 +1591,12 @@ def test_run_scraper_lazy_fetch_skips_duplicates_and_proximity() -> None:
     assert created_title == "[FreshCompany] Staff Engineer"
 
 
-def test_run_scraper_remote_preserves_preference_when_description_missing() -> None:
-    """Verify remote job is not dropped if description enrichment fails."""
+def test_run_scraper_skips_job_when_description_missing_then_retries() -> None:
+    """A job whose description cannot be fetched is skipped, not filed.
+
+    It must not be recorded as seen, so a later run that does retrieve a
+    description files it normally.
+    """
     mock_github_client = MagicMock()
     mock_github_client.repo = "owner/repo"
     mock_github_client.project_id = None
@@ -1643,8 +1648,23 @@ def test_run_scraper_remote_preserves_preference_when_description_missing() -> N
             fetch_description_fn=mock_fetch_desc,
         )
 
-    # Issue must be published despite missing description because it was queried
-    # with is_remote=True
+    # No description -> nothing to triage -> no issue filed this run.
+    mock_github_client.create_issue.assert_not_called()
+
+    # A later run (the fetch now succeeds) files the same job.
+    mock_fetch_desc.return_value = "Fully remote backend role."
+    with (
+        patch("gitemployed.scraper.load_settings", return_value=mock_settings),
+        patch("gitemployed.scraper.load_resume", return_value=mock_resume),
+        patch("gitemployed.scraper.time.sleep"),
+    ):
+        run_scraper(
+            dry_run=False,
+            github_client=mock_github_client,
+            scrape_fn=mock_scrape_jobs,
+            fetch_description_fn=mock_fetch_desc,
+        )
+
     assert mock_github_client.create_issue.call_count == 1
     assert (
         mock_github_client.create_issue.call_args[1]["title"]
