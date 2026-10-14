@@ -48,13 +48,11 @@ jobs:
           RAW_IMAGE="ghcr.io/${{ github.repository }}"
           echo "image=$(echo "$RAW_IMAGE" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
-      # Tag strategy (spec §6.3): main push -> :latest + :<sha>; tag vX.Y.Z -> :vX.Y.Z + :latest.
-      # 'latest' is emitted unconditionally: the trigger already restricts
-      # builds to main pushes and v* tags, and 'is_default_branch' is false for
-      # tag events, so gating latest on it would skip the :latest refresh on a
-      # release tag push.
-      - name: Generate Docker Image Tags
-        id: meta
+      # Tag strategy:
+      # - Full image: :latest, :<sha>; tag vX.Y.Z -> :vX.Y.Z + :latest
+      # - Slim image: :slim, :slim-<sha>; tag vX.Y.Z -> :vX.Y.Z-slim + :slim
+      - name: Generate Full Docker Image Tags
+        id: meta-full
         uses: docker/metadata-action@v6
         with:
           images: ${{ steps.image-name.outputs.image }}
@@ -63,15 +61,52 @@ jobs:
             type=ref,event=tag
             type=sha,prefix=,format=long
 
-      - name: Build Docker Image (local, for smoke test)
+      - name: Generate Slim Docker Image Tags
+        id: meta-slim
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.image-name.outputs.image }}
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=slim
+            type=ref,event=tag,suffix=-slim
+            type=sha,prefix=slim-,format=long
+
+      - name: Build Slim Docker Image (local, for smoke test)
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
+          target: slim
+          load: true
+          tags: ${{ steps.image-name.outputs.image }}:ci-smoke-test-slim
+          cache-from: type=gha,scope=slim
+          cache-to: type=gha,mode=max,scope=slim
+
+      - name: Smoke-test CLI in built slim image
+        run: |
+          docker run --rm \
+            "${{ steps.image-name.outputs.image }}:ci-smoke-test-slim" \
+            sh -c '
+              git --version &&
+              gh --version &&
+              curl --version &&
+              python -m gitemployed.cli.respond --help
+            '
+
+      - name: Build Full Docker Image (local, for smoke test)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          target: full
           load: true
           tags: ${{ steps.image-name.outputs.image }}:ci-smoke-test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=full
+            type=gha,scope=slim
+          cache-to: type=gha,mode=max,scope=full
 
       # Guards against the exact class of regression this image is prone to:
       # a `oven/bun:latest` bump, a Debian `chromium` point release, or a
@@ -91,12 +126,28 @@ jobs:
               [ -s /tmp/resume.pdf ]
             '
 
-      - name: Build and Push Docker Image
+      - name: Build and Push Slim Docker Image
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          target: slim
+          push: true
+          tags: ${{ steps.meta-slim.outputs.tags }}
+          cache-from: type=gha,scope=slim
+          cache-to: type=gha,mode=max,scope=slim
+
+      - name: Build and Push Full Docker Image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          target: full
+          push: true
+          tags: ${{ steps.meta-full.outputs.tags }}
+          cache-from: |
+            type=gha,scope=full
+            type=gha,scope=slim
+          cache-to: type=gha,mode=max,scope=full

@@ -21,23 +21,34 @@ RUN mkdir -p /opt/pdf-vdiff/lib && \
     esac && \
     curl -fsSL "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/${PDFIUM_VERSION}/${PDFIUM_FILE}" | tar -xz -C /opt/pdf-vdiff/lib/
 
-# Stage 2: Runner image
-# Use python:3.12-slim-bookworm as the base image for a lightweight runner
-FROM python:3.12-slim-bookworm
+# Stage 2: Base runner environment
+# Minimal shared environment with Python 3.12, git, gh, curl, and uv
+FROM python:3.12-slim-bookworm AS runner-base
 
 # Prevent interactive prompts during apt package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies for git, just, shellcheck, fontconfig, and
-# Chromium (+ its setuid sandbox helper) for headless PDF export via
-# resumed/Puppeteer.
+# Install minimal system dependencies for git CLI, gh CLI, and curl
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     gh \
     curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv for ultra-fast python package installation
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Set the project environment to target system Python
+ENV UV_PROJECT_ENVIRONMENT=/usr/local
+
+# Stage 3: Full runner tools (Chromium, Bun, resumed, and pdf-vdiff)
+# Pre-installs heavy PDF rendering dependencies independently of app code to preserve layer cache
+FROM runner-base AS full-tools
+
+# Install system dependencies for just, fontconfig, and Chromium (+ sandbox helper)
+# for headless PDF export via resumed/Puppeteer.
+RUN apt-get update && apt-get install -y --no-install-recommends \
     shellcheck \
-    build-essential \
-    libffi-dev \
     fonts-dejavu \
     fonts-liberation \
     chromium \
@@ -50,9 +61,6 @@ RUN useradd --create-home --shell /bin/sh pptruser
 # Install Casey's 'just' command runner
 RUN curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
 
-# Install uv for ultra-fast python package installation
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-
 # Install Bun: the JS runtime/package manager for the JSON Resume `resumed`
 # CLI. Bun is npm-registry-compatible and ships its own npx equivalent, so no
 # separate Node/npm is needed.
@@ -63,62 +71,22 @@ COPY --from=rust-builder /opt/pdf-vdiff/bin/pdf-vdiff /usr/local/bin/pdf-vdiff
 COPY --from=rust-builder /opt/pdf-vdiff/lib/lib/libpdfium.so /usr/local/lib/libpdfium.so
 RUN ldconfig
 
-
 # Point Puppeteer (used by `resumed export`) at the apt-installed Chromium
-# above instead of downloading its own bundled copy. This sidesteps
-# Puppeteer's postinstall Chromium download -- the one area with known
-# Bun/Puppeteer friction -- and lets apt resolve Chromium's many runtime
-# shared-library dependencies instead of Puppeteer's manual dependency list.
+# above instead of downloading its own bundled copy.
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Install Bun's global packages under /opt/bun rather than the default
-# ~/.bun (root's home, mode 700) so the unprivileged `pptruser` account above
-# can actually read them -- a plain root-owned home directory would block
-# traversal entirely for any other user.
+# Install Bun's global packages under /opt/bun rather than the default ~/.bun
 ENV BUN_INSTALL=/opt/bun
 ENV PATH="/opt/bun/bin:${PATH}"
 
-# Install resumed, puppeteer, and the pinned default resume theme (all
-# version-pinned -- see template/config/settings.yaml's own "always pinned"
-# policy for why floating versions of code we install-and-execute are a
-# supply-chain risk) as global Bun packages -- siblings in the same
-# node_modules tree -- so the theme and puppeteer resolve correctly no
-# matter which repo checkout resumed runs from. Keep the theme pin in sync
-# with settings.yaml's default `theme`.
-#
-# IMPORTANT, confirmed by hands-on testing: invoke this as
-# `su -s /bin/sh pptruser -c "bun /opt/bun/bin/resumed <command> ..."`, NOT
-# `bunx resumed` and NOT as root:
-# - `bunx` re-resolves `resumed` into an isolated per-invocation cache on
-#   every call and cannot see these globally-installed siblings, so a theme
-#   that is actually installed still fails with "Could not load theme ...
-#   Is it installed?". The global bin's shebang (`#!/usr/bin/env node`) also
-#   won't run on its own since this image has no `node` binary, only `bun`
-#   -- `bun` must be the explicit interpreter. Any additionally-installed
-#   theme (see GitEmployed-9ru) must also be installed with `bun add -g` into
-#   this same global tree for the same reason.
-# - `resumed export` still needs `--puppeteer-arg=--no-sandbox` even when
-#   run as `pptruser`, not because of a missing non-root user (there is
-#   one), but because Chromium's own internal sandbox needs to create user/
-#   PID/network namespaces, and confirmed by hands-on testing, Docker's
-#   default container runtime -- including GitHub Actions' declarative
-#   `container:` job syntax used by triage-issue.yml, which has no way to
-#   add `--cap-add=SYS_ADMIN` short of a workflow-level `options:` change --
-#   refuses that regardless of the calling user, root or not ("Failed to
-#   move to new namespace: ... Operation not permitted"). Running as
-#   `pptruser` instead of root still meaningfully narrows the blast radius
-#   of a Chromium renderer compromise even with `--no-sandbox` (no write
-#   access to system files, no ability to tamper with installed packages).
-#   As additional defense in depth, whatever code invokes this (GitEmployed-
-#   nx0) should strip GITHUB_TOKEN/GH_PAT/LLM API keys from the subprocess
-#   environment before running as `pptruser`, since a dropped-privilege
-#   child process otherwise still inherits the full parent environment.
+# Install resumed, puppeteer, and the pinned default resume theme as global Bun packages
 RUN bun add -g resumed@7.0.0 puppeteer@25.11.0 @jsonresume/jsonresume-theme-professional@1.0.22 \
     && chmod -R a+rX /opt/bun
 
-# Set the project environment to target system Python
-ENV UV_PROJECT_ENVIRONMENT=/usr/local
+# Stage 4: Slim runner image
+# Lightweight runner with Python 3.12 and GitEmployed CLI pre-installed
+FROM runner-base AS slim
 
 WORKDIR /workspace
 
@@ -130,3 +98,17 @@ COPY src ./src
 # Sync dependencies AND install the project system-wide, so the gitemployed CLI
 # runs from any working directory without PYTHONPATH or a src/ checkout
 RUN uv sync --frozen
+
+# Stage 5: Full runner image (default)
+# Complete runner with full PDF export, visual diffing, and GitEmployed CLI pre-installed
+FROM full-tools AS full
+
+WORKDIR /workspace
+
+# Copy the project so uv can build and install it.
+COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
+
+# Sync dependencies AND install the project system-wide
+RUN uv sync --frozen
+
