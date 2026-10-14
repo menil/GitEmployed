@@ -791,17 +791,20 @@ name = "gitemployed"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "beautifulsoup4" },
     { name = "ddgs" },
     { name = "google-api-python-client" },
     { name = "google-auth" },
     { name = "google-generativeai" },
     { name = "litellm" },
+    { name = "markdownify" },
     { name = "numpy" },
     { name = "openpyxl" },
     { name = "pandas" },
     { name = "pydantic" },
     { name = "python-jobspy" },
     { name = "pyyaml" },
+    { name = "requests" },
     { name = "trafilatura" },
 ]
 
@@ -814,17 +817,20 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "beautifulsoup4", specifier = ">=4.12.0" },
     { name = "ddgs", specifier = ">=9.14.4" },
     { name = "google-api-python-client" },
     { name = "google-auth" },
     { name = "google-generativeai" },
     { name = "litellm", specifier = ">=1.40.0" },
+    { name = "markdownify", specifier = ">=0.11.6" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "openpyxl", specifier = ">=3.1.0" },
     { name = "pandas", specifier = ">=2.2.0" },
     { name = "pydantic", specifier = ">=2.7.0" },
     { name = "python-jobspy" },
     { name = "pyyaml" },
+    { name = "requests", specifier = ">=2.31.0" },
     { name = "trafilatura", specifier = ">=2.2.0" },
 ]
 
