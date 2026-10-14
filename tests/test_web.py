@@ -319,6 +319,86 @@ def test_host_is_public() -> None:
     assert web._host_is_public("localhost") is False
 
 
+# --- JSON-LD JobPosting extraction -------------------------------------------
+
+_LONG_DESCRIPTION = "Build and run backend services in Python. " * 10
+
+
+def _json_ld_page(payload: object) -> str:
+    return (
+        "<html><head><title>Careers</title>"
+        f'<script type="application/ld+json">{json.dumps(payload)}</script>'
+        "</head><body>Sign in to view</body></html>"
+    )
+
+
+def test_extract_job_posting_reads_html_description() -> None:
+    html = _json_ld_page(
+        {
+            "@type": "JobPosting",
+            "title": "Staff Engineer",
+            "description": f"<p>{_LONG_DESCRIPTION}</p><ul><li>Python</li></ul>",
+        }
+    )
+    title, description = web._extract_job_posting(html)
+    assert title == "Staff Engineer"
+    assert "Build and run backend services" in description
+    assert "<p>" not in description
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "@graph": [
+                {"@type": "WebSite"},
+                {"@type": "JobPosting", "description": _LONG_DESCRIPTION},
+            ]
+        },
+        [{"@type": ["Thing", "JobPosting"], "description": _LONG_DESCRIPTION}],
+    ],
+)
+def test_extract_job_posting_finds_nested_and_multi_typed(payload: object) -> None:
+    assert web._extract_job_posting(_json_ld_page(payload)) is not None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"@type": "Organization", "description": _LONG_DESCRIPTION},
+        {"@type": "JobPosting", "description": "Short teaser."},
+        {"@type": "JobPosting"},
+        {"@type": "JobPosting", "description": 42},
+    ],
+)
+def test_extract_job_posting_ignores_unusable_blocks(payload: object) -> None:
+    assert web._extract_job_posting(_json_ld_page(payload)) is None
+
+
+def test_extract_job_posting_ignores_invalid_json_and_missing_block() -> None:
+    bad = '<script type="application/ld+json">{not json</script>'
+    assert web._extract_job_posting(bad) is None
+    assert web._extract_job_posting("<html><body>No data</body></html>") is None
+
+
+def test_fetch_url_prefers_json_ld_job_posting_over_page_text() -> None:
+    """A JobPosting block wins over scraped text, which could be a login wall."""
+    html = _json_ld_page({"@type": "JobPosting", "description": _LONG_DESCRIPTION})
+    opener = make_fetch_opener(body=html.encode("utf-8"), url="https://example.com/j")
+    client = make_client()
+
+    with (
+        mock.patch("gitemployed.web.urllib.request.build_opener", return_value=opener),
+        mock.patch.object(web, "_host_is_public", return_value=True),
+        mock.patch.object(web, "_extract_text", return_value="Sign in to view"),
+    ):
+        result = client.fetch_url("https://example.com/j")
+
+    assert isinstance(result, PageContent)
+    assert "Build and run backend services" in result.text
+    assert "Sign in" not in result.text
+
+
 # --- fetch_url: fetch, caps, and decoding ------------------------------------
 
 

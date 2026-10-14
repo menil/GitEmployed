@@ -137,6 +137,47 @@ def test_triage_result_from_dict_success() -> None:
     assert result.reasoning == "Strong match with Python and backend design."
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, True),
+        (True, True),
+        (False, False),
+        ("false", False),
+        ("False", False),
+        ("true", True),
+    ],
+)
+def test_triage_result_description_usable_parsing(raw: object, expected: bool) -> None:
+    """description_usable defaults to True and tolerates stringified booleans."""
+    data = {
+        "fit_score": 3.0,
+        "tech_stack_fit": 3.0,
+        "experience_fit": 3.0,
+        "location_fit": 3.0,
+        "salary_fit": 3.0,
+        "industry_fit": 3.0,
+    }
+    if raw is not None:
+        data["description_usable"] = raw
+    assert TriageResult.from_dict(data).description_usable is expected
+
+
+def test_triage_result_description_usable_defaults_true_when_absent() -> None:
+    data = dict.fromkeys(
+        (
+            "fit_score",
+            "tech_stack_fit",
+            "experience_fit",
+            "location_fit",
+            "salary_fit",
+            "industry_fit",
+        ),
+        4.0,
+    )
+    assert TriageResult.from_dict(data).description_usable is True
+
+
 def test_triage_result_from_dict_structured_reasoning() -> None:
     """Verify TriageResult preserves multi-line structured reasoning strings."""
     structured_reasoning = (

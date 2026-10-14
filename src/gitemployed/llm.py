@@ -107,6 +107,9 @@ class TriageResult(BaseModel):
     salary_fit: float = Field(..., ge=1.0, le=5.0)
     industry_fit: float = Field(..., ge=1.0, le=5.0)
     reasoning: str = ""
+    # False when the "description" was not a real posting (login wall, CAPTCHA,
+    # error page). Defaults to True so responses without the field still score.
+    description_usable: bool = True
 
     def __init__(
         self,
@@ -160,6 +163,15 @@ class TriageResult(BaseModel):
                 f"Field {info.field_name} must be between 1.0 and 5.0"
             )
         return score
+
+    @field_validator("description_usable", mode="before")
+    @classmethod
+    def _validate_description_usable(cls, val: Any) -> bool:
+        if val is None:
+            return True
+        if isinstance(val, str):
+            return val.strip().lower() not in ("false", "no", "0")
+        return bool(val)
 
     @field_validator("reasoning", mode="before")
     @classmethod
@@ -417,6 +429,11 @@ TRIAGE_PROMPT = (
     "FinTech, DevTools, etc.)\n\n"
     "Calculate the overall `fit_score` as the average or weighted score of "
     "the 5 dimensions.\n\n"
+    "First decide whether the Job Description is an actual job posting. If it "
+    "is instead a login wall, CAPTCHA or bot-check page, error page, cookie "
+    "banner, or otherwise contains no real role details, set "
+    "`description_usable` to false and use 3.0 for every score; do not infer "
+    "a fit from the company or title alone. Otherwise set it to true.\n\n"
     "Your response MUST be a single JSON object matching the following structure:\n"
     "{{\n"
     '  "fit_score": float,\n'
@@ -425,6 +442,7 @@ TRIAGE_PROMPT = (
     '  "location_fit": float,\n'
     '  "salary_fit": float,\n'
     '  "industry_fit": float,\n'
+    '  "description_usable": boolean,\n'
     '  "reasoning": "A structured developer-focused explanation formatted with '
     "markdown paragraphs and bullet points:\\n\\n"
     "<Short opening summary paragraph>\\n\\n"
