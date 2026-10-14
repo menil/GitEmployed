@@ -15,6 +15,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from gitemployed.assistant import (
     GMAIL_NOTICE_MARKER,
@@ -28,6 +29,14 @@ from gitemployed.llm import ChatMessage, QuotaExceededError
 from gitemployed.schema import ProjectsV2Config, Resume, Settings
 
 DEFAULT_ENV = {"GITHUB_TOKEN": "test_token", "GITHUB_REPOSITORY": "owner/repo"}
+_real_has_bun_runtime = respond._has_bun_runtime
+
+
+@pytest.fixture(autouse=True)
+def mock_bun_runtime():
+    """Default to Bun runtime being available for general responder unit tests."""
+    with patch("gitemployed.cli.respond._has_bun_runtime", return_value=True):
+        yield
 
 
 def sample_resume() -> Resume:
@@ -1919,3 +1928,171 @@ def test_main_event_failure_with_drain_continues_and_exits_1(
     mock_post.assert_called_once()
     assert "Primary event failed" in mock_post.call_args.args[1]
     mock_drain.assert_called_once()
+
+
+def test_has_bun_runtime_detection() -> None:
+    """_has_bun_runtime returns True if bun is in PATH, BUN_PATH, or common dirs."""
+    with patch("shutil.which", return_value="/usr/local/bin/bun"):
+        assert _real_has_bun_runtime() is True
+    with (
+        patch("shutil.which", return_value=None),
+        patch.dict(os.environ, {"BUN_PATH": "/custom/bun"}),
+        patch("pathlib.Path.exists", return_value=True),
+    ):
+        assert _real_has_bun_runtime() is True
+    with (
+        patch("shutil.which", return_value=None),
+        patch.dict(os.environ, {}, clear=True),
+        patch("pathlib.Path.exists", return_value=True),
+    ):
+        assert _real_has_bun_runtime() is True
+    with (
+        patch("shutil.which", return_value=None),
+        patch.dict(os.environ, {}, clear=True),
+        patch("pathlib.Path.exists", return_value=False),
+    ):
+        assert _real_has_bun_runtime() is False
+
+
+def test_workflow_jobs_split_for_comments_and_opened_issues() -> None:
+    """Verify respond-issue.yml splits comment and opened-issue jobs."""
+    workflow_path = (
+        Path(__file__).parent.parent / "template/.github/workflows/respond-issue.yml"
+    )
+    assert workflow_path.exists()
+    data = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    jobs = data["jobs"]
+    assert "respond" in jobs
+    assert "triage-opened" in jobs
+
+    respond_job = jobs["respond"]
+    assert respond_job["container"]["image"] == "ghcr.io/menil/gitemployed:slim"
+    assert "issue_comment" in respond_job["if"]
+    assert respond_job["concurrency"]["group"] == "respond-queue"
+
+    triage_job = jobs["triage-opened"]
+    assert triage_job["container"]["image"] == "ghcr.io/menil/gitemployed:latest"
+    assert "issues" in triage_job["if"]
+    assert "triage-pending" in triage_job["if"]
+    assert (
+        triage_job["concurrency"]["group"] == "respond-${{ github.event.issue.number }}"
+    )
+
+
+def test_execute_action_triage_delegates_when_bun_missing() -> None:
+    """When Bun runtime is missing, ACTION_TRIAGE labels triage-pending
+    and posts a confirmation comment.
+    """
+    gh = FakeGitHubClient(labels=["ready-to-apply"])
+    with (
+        patch("gitemployed.cli.respond._has_bun_runtime", return_value=False),
+        patch("gitemployed.cli.respond.sync_lifecycle_label") as mock_sync_label,
+        patch("gitemployed.cli.respond.triage.run_triage") as mock_run_triage,
+    ):
+        respond.execute_action(
+            AgentAction(action="triage"),
+            issue_number=5,
+            issue_title="Role at Acme",
+            issue_body="https://careers.acme.com/jobs/123",
+            issue_node_id="ND",
+            repo_path=Path("/repo"),
+            gh_client=gh,
+            settings=sample_settings(),
+            resume=sample_resume(),
+            llm_client="llm",
+            web_client="web",
+            current_labels=["ready-to-apply"],
+        )
+
+    mock_run_triage.assert_not_called()
+    mock_sync_label.assert_called_once_with(
+        gh,
+        5,
+        "triage-pending",
+        current_labels={"ready-to-apply"},
+    )
+    assert len(gh.posted_comments) == 1
+    assert "queued this job posting for full triage" in gh.posted_comments[0][1]
+    assert STATUS_CONFIRMATION_MARKER in gh.posted_comments[0][1]
+
+
+def test_handle_opened_event_delegates_when_bun_missing() -> None:
+    """When Bun runtime is missing, handle_opened_event labels triage-pending
+    and returns.
+    """
+    gh = FakeGitHubClient()
+    event = opened_event()
+    with (
+        patch("gitemployed.cli.respond._has_bun_runtime", return_value=False),
+        patch("gitemployed.cli.respond.sync_lifecycle_label") as mock_sync_label,
+        patch("gitemployed.cli.respond.triage.run_triage") as mock_run_triage,
+        patch("gitemployed.cli.respond.triage.fetch_job_page") as mock_fetch,
+    ):
+        respond.handle_opened_event(
+            event,
+            gh_client=gh,
+            web_client=MagicMock(),
+            llm_client=MagicMock(),
+            settings=sample_settings(),
+            resume=sample_resume(),
+            repo_path=Path("/repo"),
+        )
+
+    mock_run_triage.assert_not_called()
+    mock_fetch.assert_not_called()
+    mock_sync_label.assert_called_once_with(
+        gh,
+        6,
+        "triage-pending",
+        current_labels=set(),
+    )
+
+
+def test_delegate_to_triage() -> None:
+    """_delegate_to_triage syncs label and conditionally posts comment."""
+    gh = FakeGitHubClient(labels=["interviewing"])
+    with patch("gitemployed.cli.respond.sync_lifecycle_label") as mock_sync:
+        respond._delegate_to_triage(
+            gh,
+            42,
+            current_labels=None,
+            post_comment=True,
+        )
+    mock_sync.assert_called_once_with(
+        gh,
+        42,
+        "triage-pending",
+        current_labels=None,
+    )
+    assert len(gh.posted_comments) == 1
+    assert "queued this job posting" in gh.posted_comments[0][1]
+
+
+def test_execute_action_triage_delegation_preserves_existing_labels() -> None:
+    """Delegating to triage-pending preserves existing non-lifecycle labels."""
+    gh = FakeGitHubClient(labels=["fit-tier-1", "source:manual"])
+    with (
+        patch("gitemployed.cli.respond._has_bun_runtime", return_value=False),
+        patch("gitemployed.cli.respond.triage.run_triage") as mock_run_triage,
+    ):
+        respond.execute_action(
+            AgentAction(action="triage"),
+            issue_number=5,
+            issue_title="Role at Acme",
+            issue_body="https://careers.acme.com/jobs/123",
+            issue_node_id="ND",
+            repo_path=Path("/repo"),
+            gh_client=gh,
+            settings=sample_settings(),
+            resume=sample_resume(),
+            llm_client="llm",
+            web_client="web",
+            current_labels=["fit-tier-1", "source:manual"],
+        )
+
+    mock_run_triage.assert_not_called()
+    assert (5, ["triage-pending"]) in gh.added_labels
+    assert "triage-pending" in gh.labels
+    assert "fit-tier-1" in gh.labels
+    assert "source:manual" in gh.labels

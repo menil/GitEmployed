@@ -28,6 +28,7 @@ import logging
 import os
 import pathlib
 import re
+import shutil
 import sys
 from typing import Any
 
@@ -236,6 +237,53 @@ def _is_bare_url_submission(body: str, title: str) -> bool:
     return not any(kw in title_lower for kw in STATUS_KEYWORDS)
 
 
+_COMMON_BUN_PATHS: tuple[pathlib.Path, ...] = (
+    pathlib.Path("/usr/local/bin/bun"),
+    pathlib.Path("/usr/bin/bun"),
+    pathlib.Path("/opt/homebrew/bin/bun"),
+)
+
+
+def _has_bun_runtime() -> bool:
+    """Return True if Bun binary is available in PATH, env var, or common paths."""
+    if shutil.which("bun"):
+        return True
+    bun_env = os.environ.get("BUN_PATH")
+    if bun_env and pathlib.Path(bun_env).exists():
+        return True
+    home_bun = pathlib.Path.home() / ".bun" / "bin" / "bun"
+    return any(p.exists() for p in (*_COMMON_BUN_PATHS, home_bun))
+
+
+def _delegate_to_triage(
+    gh_client: GitHubClient,
+    issue_number: int,
+    *,
+    current_labels: list[str] | set[str] | None = None,
+    post_comment: bool = False,
+) -> None:
+    """Label issue with triage-pending to delegate to full triage workflow."""
+    logger.info(
+        "Bun runtime not available in current runner; labeling issue #%d "
+        "with triage-pending for the full triage workflow.",
+        issue_number,
+    )
+    labels = set(current_labels) if current_labels is not None else None
+    sync_lifecycle_label(
+        gh_client,
+        issue_number,
+        "triage-pending",
+        current_labels=labels,
+    )
+    if post_comment:
+        gh_client.post_comment(
+            issue_number,
+            _confirmation_comment(
+                "I've queued this job posting for full triage and tailoring."
+            ),
+        )
+
+
 def execute_action(
     action: AgentAction,
     *,
@@ -319,6 +367,14 @@ def execute_action(
             logger.info(
                 "Issue #%d is labeled triage-pending; the triage webhook owns it.",
                 issue_number,
+            )
+            return
+        if not _has_bun_runtime():
+            _delegate_to_triage(
+                gh_client,
+                issue_number,
+                current_labels=c_labels,
+                post_comment=True,
             )
             return
         triage.run_triage(
@@ -524,6 +580,14 @@ def handle_opened_event(
     if not should_auto_detect(issue_body, labels):
         logger.info(
             "Issue #%d does not match the auto-detect guard; skipping.", issue_number
+        )
+        return
+
+    if not _has_bun_runtime():
+        _delegate_to_triage(
+            gh_client,
+            issue_number,
+            current_labels=labels,
         )
         return
 
