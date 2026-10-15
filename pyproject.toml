@@ -12,10 +12,9 @@ requires-python = ">=3.14"
 dependencies = [
     "pyyaml",
     "python-jobspy",
-    "google-generativeai",
-    # Already fully resolved transitively via google-generativeai (see
-    # uv.lock); promoted to direct deps for the Gmail integration
-    # (specs/gmail-integration.md §5.1, §13.7).
+    # Direct deps for the Gmail integration (specs/gmail-integration.md
+    # §5.1, §13.7). Gemini models are reached through litellm over HTTP, so
+    # the deprecated google-generativeai SDK is not needed.
     "google-api-python-client",
     "google-auth",
     "pydantic>=2.7.0",

@@ -19,7 +19,7 @@ jobs:
       image: ghcr.io/menil/gitemployed:slim
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Verify Setup and Gist Configuration
         id: status

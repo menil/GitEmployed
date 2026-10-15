@@ -38,7 +38,7 @@ jobs:
       - name: Restore last-sync timestamp
         if: steps.token.outputs.has_gh_pat == 'true'
         id: cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           key: project-status-sync-last-run-${{ github.run_id }}
           restore-keys: project-status-sync-last-run-
@@ -72,7 +72,7 @@ jobs:
 
       - name: Save last-sync timestamp
         if: always() && steps.token.outputs.has_gh_pat == 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           key: project-status-sync-last-run-${{ github.run_id }}
           path: /tmp/last-sync-timestamp
@@ -90,7 +90,7 @@ jobs:
       image: ghcr.io/menil/gitemployed:slim
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run Project Status Sync
         run: |
