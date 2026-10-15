@@ -136,7 +136,7 @@ def _to_float(val: Any) -> float | None:
             return None
         f = float(val)
         return None if math.isnan(f) or math.isinf(f) else f
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
 
@@ -655,7 +655,7 @@ def _is_linkedin_url(url: Any) -> bool:
         parsed = urllib.parse.urlparse(clean)
         hostname = (parsed.hostname or "").lower()
         return hostname == "linkedin.com" or hostname.endswith(".linkedin.com")
-    except (ValueError, AttributeError):
+    except ValueError, AttributeError:
         return False
 
 
@@ -712,7 +712,7 @@ def normalize_job_url(url: Any) -> str:
         path = parsed.path.rstrip("/")
         normalized = urllib.parse.urlunparse((scheme, netloc, path, "", new_query, ""))
         return normalized.rstrip("/")
-    except (ValueError, AttributeError):
+    except ValueError, AttributeError:
         return clean.rstrip("/")
 
 
@@ -898,7 +898,7 @@ def _retry_delay_seconds(resp: requests.Response, attempt: int) -> float:
     retry_after = resp.headers.get("Retry-After", "")
     try:
         delay = float(retry_after)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         delay = LINKEDIN_BACKOFF_BASE_SECONDS * (2**attempt)
     return max(0.0, min(delay, LINKEDIN_MAX_BACKOFF_SECONDS))
 

@@ -123,7 +123,7 @@ def _parse_iso(value: str | None) -> datetime | None:
         return None
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -137,7 +137,7 @@ def _normalize_message_date(raw_date: str) -> str:
     if raw_date:
         try:
             parsed = email.utils.parsedate_to_datetime(raw_date)
-        except (TypeError, ValueError, OverflowError):
+        except TypeError, ValueError, OverflowError:
             parsed = None
         if parsed is not None:
             if parsed.tzinfo is None:

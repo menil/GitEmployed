@@ -83,7 +83,7 @@ def _http_status(error: HttpError) -> int | None:
         return None
     try:
         return int(status)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 

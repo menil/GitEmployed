@@ -185,7 +185,7 @@ class TriageResult(BaseModel):
         return str(val)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "TriageResult":
+    def from_dict(cls, data: dict[str, Any]) -> TriageResult:
         """Parse TriageResult from a dictionary, enforcing bounds and types.
 
         Raises:
@@ -356,7 +356,7 @@ class JobDetails(BaseModel):
         return str(val)
 
     @classmethod
-    def from_dict(cls, data: Any) -> "JobDetails":
+    def from_dict(cls, data: Any) -> JobDetails:
         """Parse JobDetails from a dictionary, enforcing string types.
 
         Raises:
@@ -844,7 +844,7 @@ class EmailMatchResult(BaseModel):
         data: Any,
         valid_issue_numbers: Iterable[int],
         valid_statuses: Iterable[str],
-    ) -> "EmailMatchResult":
+    ) -> EmailMatchResult:
         """Parse an `EMAIL_MATCH_PROMPT` response dict, allowlisting its fields.
 
         This is the feature's actual prompt-injection mitigation (spec

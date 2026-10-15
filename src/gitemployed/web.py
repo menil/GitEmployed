@@ -276,7 +276,7 @@ def _verify_public_peer(resp: Any) -> None:
     """
     try:
         peer = resp.fp.raw._sock.getpeername()[0]
-    except (AttributeError, OSError, IndexError, TypeError):
+    except AttributeError, OSError, IndexError, TypeError:
         return
     if not isinstance(peer, str):
         return
@@ -347,7 +347,7 @@ def _extract_job_posting(html: str) -> tuple[str, str] | None:
     for script in soup.find_all("script", type="application/ld+json"):
         try:
             document = json.loads(script.string or "")
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             continue
         for node in _iter_json_ld_nodes(document):
             node_type = node.get("@type")

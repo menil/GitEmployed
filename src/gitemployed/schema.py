@@ -157,7 +157,7 @@ class SearchConfig(BaseModel):
         return bool(v)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SearchConfig":
+    def from_dict(cls, data: dict[str, Any]) -> SearchConfig:
         """Parse search configuration from dictionary."""
         if not isinstance(data, dict):
             raise ValidationError("Search configuration must be a dictionary.")
@@ -199,7 +199,7 @@ class ProjectsV2Config(BaseModel):
         return v or "Status"
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ProjectsV2Config":
+    def from_dict(cls, data: dict[str, Any]) -> ProjectsV2Config:
         """Parse Projects V2 configuration from dictionary."""
         if not isinstance(data, dict):
             raise ValidationError("projects_v2 configuration must be a dictionary.")
@@ -282,13 +282,13 @@ class GmailConfig(BaseModel):
         return val
 
     @pydantic.model_validator(mode="after")
-    def _validate_enabled_requires_label(self) -> "GmailConfig":
+    def _validate_enabled_requires_label(self) -> GmailConfig:
         if self.enabled and not self.label:
             raise ValidationError("gmail.label is required when gmail.enabled is true.")
         return self
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "GmailConfig":
+    def from_dict(cls, data: dict[str, Any]) -> GmailConfig:
         """Parse Gmail configuration from dictionary."""
         if not isinstance(data, dict):
             raise ValidationError("gmail configuration must be a dictionary.")
@@ -412,7 +412,7 @@ class ResearchConfig(BaseModel):
         return v or default_val
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ResearchConfig":
+    def from_dict(cls, data: dict[str, Any]) -> ResearchConfig:
         """Parse research configuration from dictionary."""
         if not isinstance(data, dict):
             raise ValidationError("Research configuration must be a dictionary.")
@@ -511,7 +511,7 @@ class Settings(BaseModel):
         return v
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Settings":
+    def from_dict(cls, data: dict[str, Any]) -> Settings:
         """Parse settings from dictionary."""
         if not isinstance(data, dict):
             raise ValidationError("Settings data must be a dictionary.")
@@ -598,7 +598,7 @@ class Location(BaseModel):
     country_code: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Location":
+    def from_dict(cls, data: dict[str, Any]) -> Location:
         """Parse location details from dictionary."""
         if not isinstance(data, dict):
             raise ValidationError("basics.location must be a dictionary.")
@@ -643,7 +643,7 @@ class Profile(BaseModel):
     url: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Profile":
+    def from_dict(cls, data: dict[str, Any]) -> Profile:
         """Parse social profile details from dictionary."""
         if not isinstance(data, dict):
             raise ValidationError("profile details must be a dictionary.")
@@ -699,7 +699,7 @@ class Basics(BaseModel):
     profiles: list[Profile] = Field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Basics":
+    def from_dict(cls, data: dict[str, Any]) -> Basics:
         """Parse basics section from dictionary."""
         if not isinstance(data, dict):
             raise ValidationError("Resume basics must be a dictionary.")
@@ -789,7 +789,7 @@ class Work(BaseModel):
     highlights: list[str] = Field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Work":
+    def from_dict(cls, data: dict[str, Any]) -> Work:
         """Parse work experience entry from dictionary."""
         if not isinstance(data, dict):
             raise ValidationError("work entry must be a dictionary.")
@@ -865,7 +865,7 @@ class Education(BaseModel):
     courses: list[str] = Field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Education":
+    def from_dict(cls, data: dict[str, Any]) -> Education:
         """Parse education history entry from dictionary."""
         if not isinstance(data, dict):
             raise ValidationError("education entry must be a dictionary.")
@@ -934,7 +934,7 @@ class Skill(BaseModel):
     keywords: list[str] = Field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Skill":
+    def from_dict(cls, data: dict[str, Any]) -> Skill:
         """Parse skill entry from dictionary."""
         if not isinstance(data, dict):
             raise ValidationError("skill entry must be a dictionary.")
@@ -985,7 +985,7 @@ class Project(BaseModel):
     url: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Project":
+    def from_dict(cls, data: dict[str, Any]) -> Project:
         """Parse project entry from dictionary."""
         if not isinstance(data, dict):
             raise ValidationError("project entry must be a dictionary.")
@@ -1066,7 +1066,7 @@ class Resume(BaseModel):
     meta: dict[str, Any] | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Resume":
+    def from_dict(cls, data: dict[str, Any]) -> Resume:
         """Parse full resume from dictionary with parsing validation."""
         if not isinstance(data, dict):
             raise ValidationError("Resume data must be a dictionary.")
