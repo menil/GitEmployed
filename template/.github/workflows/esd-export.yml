@@ -58,7 +58,7 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/menil/gitemployed:latest
+      image: ghcr.io/menil/gitemployed:slim
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
