@@ -1733,3 +1733,27 @@ def test_linkedin_throttle_warns_once_when_tripped(
             throttle.record_exhausted()
 
     assert len([r for r in caplog.records if "throttled" in r.message]) == 1
+
+
+def test_scrape_kwargs_match_real_jobspy_signature() -> None:
+    """The kwargs scrape_listings passes must exist in the installed jobspy.
+
+    Every other scrape test injects a mock scrape_fn, so a jobspy release that
+    renames or drops a parameter would otherwise only surface in production.
+    """
+    import inspect
+
+    from jobspy import scrape_jobs
+
+    params = inspect.signature(scrape_jobs).parameters
+    passed = {
+        "site_name",
+        "search_term",
+        "location",
+        "is_remote",
+        "job_type",
+        "hours_old",
+        "results_wanted",
+        "linkedin_fetch_description",
+    }
+    assert not passed - params.keys()

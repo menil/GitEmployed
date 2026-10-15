@@ -22,8 +22,8 @@ RUN mkdir -p /opt/pdf-vdiff/lib && \
     curl -fsSL "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/${PDFIUM_VERSION}/${PDFIUM_FILE}" | tar -xz -C /opt/pdf-vdiff/lib/
 
 # Stage 2: Base runner environment
-# Minimal shared environment with Python 3.12, git, gh, curl, and uv
-FROM python:3.12-slim-bookworm AS runner-base
+# Minimal shared environment with Python 3.14, git, gh, curl, and uv
+FROM python:3.14-slim-bookworm AS runner-base
 
 # Prevent interactive prompts during apt package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -85,7 +85,7 @@ RUN bun add -g resumed@7.0.0 puppeteer@25.11.0 @jsonresume/jsonresume-theme-prof
     && chmod -R a+rX /opt/bun
 
 # Stage 4: Slim runner image
-# Lightweight runner with Python 3.12 and GitEmployed CLI pre-installed
+# Lightweight runner with Python 3.14 and GitEmployed CLI pre-installed
 FROM runner-base AS slim
 
 WORKDIR /workspace
