@@ -1323,6 +1323,7 @@ def run_all_pending(
     # Shared stop signal: once quota is hit, queued issues must not start.
     stop = threading.Event()
     quota_exceeded = False
+    approved: list[_ScoredIssue] = []
 
     with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
         futures: dict[Future[_ScoredIssue | None], int] = {}
@@ -1346,22 +1347,44 @@ def run_all_pending(
             issue_number = futures[future]
             try:
                 scored = future.result()
-                if scored is not None and scored.outcome.approved:
-                    _tailor_scored_issue(
-                        scored, repo_path, gh_client, settings, resume, llm_client
-                    )
             except QuotaExceededError as e:
                 logger.warning(
-                    "LLM API quota exceeded while triaging #%d: %s", issue_number, e
+                    "LLM API quota exceeded while scoring #%d: %s", issue_number, e
                 )
                 quota_exceeded = True
                 stop.set()
+                continue
             except Exception as e:
                 failed += 1
                 logger.exception("Triage failed for issue #%d: %s", issue_number, e)
+                continue
+            if scored is not None and scored.outcome.approved:
+                approved.append(scored)
 
     if quota_exceeded:
+        # Approved issues keep their triage-pending label, so the next run
+        # picks them up again; tailoring now would only spend more quota.
         return EXIT_QUOTA_EXCEEDED
+
+    # Tailoring checks out branches in the single shared working tree, so it
+    # runs one issue at a time, and only after every score has finished.
+    # Sorted so the order is stable regardless of scoring completion order.
+    for scored in sorted(approved, key=lambda item: item.issue_number):
+        try:
+            _tailor_scored_issue(
+                scored, repo_path, gh_client, settings, resume, llm_client
+            )
+        except QuotaExceededError as e:
+            logger.warning(
+                "LLM API quota exceeded while tailoring #%d: %s",
+                scored.issue_number,
+                e,
+            )
+            return EXIT_QUOTA_EXCEEDED
+        except Exception as e:
+            failed += 1
+            logger.exception("Triage failed for issue #%d: %s", scored.issue_number, e)
+
     if failed:
         return EXIT_ERROR
 
@@ -1378,7 +1401,9 @@ def _tailor_scored_issue(
 ) -> None:
     """Run the git-mutating tailor phase for one approved, scored issue."""
     outcome = scored.outcome
-    assert outcome.job_details is not None and outcome.triage_res is not None
+    if outcome.job_details is None or outcome.triage_res is None:
+        # Not an assert: those are stripped under ``python -O``.
+        raise RuntimeError("Approved ScoreOutcome is missing scoring results.")
     _handle_approved_match(
         issue_number=scored.issue_number,
         issue_node_id=scored.issue_node_id,
