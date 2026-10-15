@@ -190,7 +190,7 @@ To enforce quality standards, local validation, and runner test checks:
 
 ### 5.1. Nix Environment Configuration
 *   **`devenv.nix`**: Defines the environment:
-    *   Python 3.11+
+    *   Python 3.14+
     *   System fonts (DejaVu, Liberation) for PDF rendering fidelity.
     *   `languages.python` enabled with virtualenv mapping `requirements.txt`.
 *   **`.envrc`**: Configured with `use devenv` for seamless local `direnv` environment loading.

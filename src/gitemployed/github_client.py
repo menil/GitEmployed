@@ -110,7 +110,7 @@ class GitHubClient:
             tuple[str, str], tuple[str, dict[str, dict[str, str]]]
         ] = {}
 
-    def _retry_delay(self, error: "urllib.error.HTTPError", attempt: int) -> float:
+    def _retry_delay(self, error: urllib.error.HTTPError, attempt: int) -> float:
         """Compute the backoff delay before retrying a transient failure.
 
         Honors the server's ``Retry-After`` header when present (seconds);
@@ -122,11 +122,11 @@ class GitHubClient:
         if retry_after is not None:
             try:
                 return float(retry_after)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 pass
         return float(min(2**attempt, 8))
 
-    def _read_error_body(self, error: "urllib.error.HTTPError") -> str:
+    def _read_error_body(self, error: urllib.error.HTTPError) -> str:
         """Read and decode an HTTP error response body, tolerating failures."""
         try:
             body_bytes = error.read()

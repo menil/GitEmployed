@@ -91,7 +91,7 @@ def _to_int(value: Any) -> int | None:
     """Coerce a webhook scalar (often a JSON string) to an int."""
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 

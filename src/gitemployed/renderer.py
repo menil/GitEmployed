@@ -308,7 +308,7 @@ def compile_resume_pdf(
         render_user_gid = grp.getgrnam(_RENDER_USER).gr_gid
         os.chown(output_pdf_path.parent, -1, render_user_gid)
         output_pdf_path.parent.chmod(0o775)
-    except (KeyError, PermissionError, OSError):
+    except KeyError, PermissionError, OSError:
         output_pdf_path.parent.chmod(0o777)
 
     # If the output PDF already exists (e.g. checked out from a previous commit

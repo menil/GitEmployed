@@ -189,7 +189,7 @@ def _resolve_context(
     if issue_number is not None:
         try:
             issue_number = int(issue_number)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             issue_number = None
 
     if not token:
