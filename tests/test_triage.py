@@ -6,6 +6,7 @@ import logging
 import os
 import pathlib
 import sys
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -13,6 +14,7 @@ import pytest
 from gitemployed.cli.triage import (
     _DEFAULT_RESUME_THEME,
     BATCH_PAGE_SIZE,
+    EXIT_ERROR,
     EXIT_QUOTA_EXCEEDED,
     FIT_CATEGORY_MISMATCH_LABELS,
     INLINE_DIFF_MAX_CHARS,
@@ -1870,6 +1872,12 @@ def test_main_quota_exceeded(
     assert exc_info.value.code == EXIT_QUOTA_EXCEEDED
 
 
+def _serve_open_issues(client: mock.MagicMock, issues: list[dict[str, Any]]) -> None:
+    """Make ``get_issue`` return each given issue (open) by its number."""
+    by_number = {i["number"]: {**i, "state": "open"} for i in issues}
+    client.get_issue.side_effect = lambda number: by_number[number]
+
+
 @mock.patch("gitemployed.cli.triage.run_triage")
 def test_run_all_pending_triages_each_labeled_issue(
     mock_run_triage: mock.MagicMock,
@@ -1903,6 +1911,7 @@ def test_run_all_pending_triages_each_labeled_issue(
     ]
     mock_llm_client = mock.MagicMock(spec=LLMClient)
 
+    _serve_open_issues(mock_gh_client, mock_gh_client.list_issues.return_value)
     exit_code = run_all_pending(
         gh_client=mock_gh_client,
         repo_path=pathlib.Path("/repo"),
@@ -1977,6 +1986,7 @@ def test_run_all_pending_paginates_through_all_pending_issues(
         }
     ]
     mock_gh_client.list_issues.side_effect = [first_page, second_page]
+    _serve_open_issues(mock_gh_client, first_page + second_page)
 
     exit_code = run_all_pending(
         gh_client=mock_gh_client,
@@ -2009,6 +2019,161 @@ def test_run_all_pending_paginates_through_all_pending_issues(
 
 
 @mock.patch("gitemployed.cli.triage.run_triage")
+def test_run_all_pending_not_skipped_when_triage_shrinks_result_set(
+    mock_run_triage: mock.MagicMock,
+    mock_resume: Resume,
+    mock_settings: Settings,
+) -> None:
+    """Regression: triage removing the label must not shift issues past page 2."""
+    total = BATCH_PAGE_SIZE * 2 + 5
+    pending = [
+        {
+            "number": n,
+            "title": f"Job {n}",
+            "body": "Body",
+            "node_id": f"node_{n}",
+            "labels": [{"name": "triage-pending"}],
+        }
+        for n in range(1, total + 1)
+    ]
+
+    def fake_list_issues(*, per_page: int, page: int, **_: Any) -> list[dict]:
+        start = (page - 1) * per_page
+        return list(pending[start : start + per_page])
+
+    def fake_run_triage(*, issue_number: int, **_: Any) -> None:
+        # Mirror the real label removal, which shrinks the live result set.
+        pending[:] = [i for i in pending if i["number"] != issue_number]
+
+    mock_gh_client = mock.MagicMock(spec=GitHubClient)
+    mock_gh_client.list_issues.side_effect = fake_list_issues
+    mock_run_triage.side_effect = fake_run_triage
+    _serve_open_issues(mock_gh_client, list(pending))
+
+    exit_code = run_all_pending(
+        gh_client=mock_gh_client,
+        repo_path=pathlib.Path("/repo"),
+        settings=mock_settings,
+        resume=mock_resume,
+        llm_client=mock.MagicMock(spec=LLMClient),
+    )
+
+    assert exit_code == 0
+    triaged = [c.kwargs["issue_number"] for c in mock_run_triage.call_args_list]
+    assert sorted(triaged) == list(range(1, total + 1))
+
+
+@mock.patch("gitemployed.cli.triage.run_triage")
+def test_run_all_pending_skips_issues_no_longer_pending(
+    mock_run_triage: mock.MagicMock,
+    mock_resume: Resume,
+    mock_settings: Settings,
+) -> None:
+    """Issues closed or untriaged after the snapshot must not be triaged."""
+    snapshot = [
+        {
+            "number": n,
+            "title": f"Job {n}",
+            "body": "Body",
+            "node_id": f"node_{n}",
+            "labels": [{"name": "triage-pending"}],
+        }
+        for n in (10, 11, 12)
+    ]
+    fresh = {
+        10: {**snapshot[0], "state": "closed"},
+        11: {**snapshot[1], "state": "open", "labels": [{"name": "triaged"}]},
+        12: {**snapshot[2], "state": "open", "title": "Edited title"},
+    }
+    mock_gh_client = mock.MagicMock(spec=GitHubClient)
+    mock_gh_client.list_issues.return_value = snapshot
+    mock_gh_client.get_issue.side_effect = lambda number: fresh[number]
+
+    exit_code = run_all_pending(
+        gh_client=mock_gh_client,
+        repo_path=pathlib.Path("/repo"),
+        settings=mock_settings,
+        resume=mock_resume,
+        llm_client=mock.MagicMock(spec=LLMClient),
+    )
+
+    assert exit_code == 0
+    mock_run_triage.assert_called_once()
+    # Fresh data, not the stale snapshot, is what gets triaged.
+    assert mock_run_triage.call_args.kwargs["issue_number"] == 12
+    assert mock_run_triage.call_args.kwargs["issue_title"] == "Edited title"
+
+
+@mock.patch("gitemployed.cli.triage.run_triage")
+def test_run_all_pending_counts_refetch_failure_and_continues(
+    mock_run_triage: mock.MagicMock,
+    mock_resume: Resume,
+    mock_settings: Settings,
+) -> None:
+    """A failed refetch fails that issue only, not the whole batch."""
+    snapshot = [
+        {
+            "number": n,
+            "title": f"Job {n}",
+            "body": "Body",
+            "node_id": f"node_{n}",
+            "labels": [{"name": "triage-pending"}],
+        }
+        for n in (10, 11)
+    ]
+    mock_gh_client = mock.MagicMock(spec=GitHubClient)
+    mock_gh_client.list_issues.return_value = snapshot
+    mock_gh_client.get_issue.side_effect = [
+        RuntimeError("boom"),
+        {**snapshot[1], "state": "open"},
+    ]
+
+    exit_code = run_all_pending(
+        gh_client=mock_gh_client,
+        repo_path=pathlib.Path("/repo"),
+        settings=mock_settings,
+        resume=mock_resume,
+        llm_client=mock.MagicMock(spec=LLMClient),
+    )
+
+    assert exit_code == EXIT_ERROR
+    mock_run_triage.assert_called_once()
+    assert mock_run_triage.call_args.kwargs["issue_number"] == 11
+
+
+@mock.patch("gitemployed.cli.triage.run_triage")
+def test_run_all_pending_triages_nothing_when_listing_fails_mid_pagination(
+    mock_run_triage: mock.MagicMock,
+    mock_resume: Resume,
+    mock_settings: Settings,
+) -> None:
+    """The snapshot is all-or-nothing: a failed later page triages nothing."""
+    full_page = [
+        {
+            "number": n,
+            "title": f"Job {n}",
+            "body": "Body",
+            "node_id": f"node_{n}",
+            "labels": [{"name": "triage-pending"}],
+        }
+        for n in range(1, BATCH_PAGE_SIZE + 1)
+    ]
+    mock_gh_client = mock.MagicMock(spec=GitHubClient)
+    mock_gh_client.list_issues.side_effect = [full_page, RuntimeError("api down")]
+
+    exit_code = run_all_pending(
+        gh_client=mock_gh_client,
+        repo_path=pathlib.Path("/repo"),
+        settings=mock_settings,
+        resume=mock_resume,
+        llm_client=mock.MagicMock(spec=LLMClient),
+    )
+
+    assert exit_code == EXIT_ERROR
+    mock_run_triage.assert_not_called()
+
+
+@mock.patch("gitemployed.cli.triage.run_triage")
 def test_run_all_pending_continues_on_individual_failure(
     mock_run_triage: mock.MagicMock,
     mock_resume: Resume,
@@ -2035,6 +2200,7 @@ def test_run_all_pending_continues_on_individual_failure(
     mock_run_triage.side_effect = [None, ValueError("boom")]
     mock_llm_client = mock.MagicMock(spec=LLMClient)
 
+    _serve_open_issues(mock_gh_client, mock_gh_client.list_issues.return_value)
     exit_code = run_all_pending(
         gh_client=mock_gh_client,
         repo_path=pathlib.Path("/repo"),
@@ -2074,6 +2240,7 @@ def test_run_all_pending_returns_quota_exit_code(
     mock_run_triage.side_effect = [QuotaExceededError("quota"), None]
     mock_llm_client = mock.MagicMock(spec=LLMClient)
 
+    _serve_open_issues(mock_gh_client, mock_gh_client.list_issues.return_value)
     exit_code = run_all_pending(
         gh_client=mock_gh_client,
         repo_path=pathlib.Path("/repo"),

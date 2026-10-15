@@ -1132,6 +1132,42 @@ def run_triage(
         )
 
 
+def _list_all_pending_issues(gh_client: GitHubClient) -> list[dict[str, Any]]:
+    """Collect every open ``triage-pending`` issue before any is triaged.
+
+    Triage removes the label, which shrinks the filtered result set; paging
+    lazily while triaging would shift later issues into already-read pages
+    and skip them. Snapshotting first keeps page offsets stable. The snapshot
+    can go stale during a long run, so callers must refetch before acting.
+    """
+    pending: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        issues = gh_client.list_issues(
+            state="open",
+            labels="triage-pending",
+            per_page=BATCH_PAGE_SIZE,
+            page=page,
+            sort="created",
+            direction="asc",
+        )
+        pending.extend(
+            issue
+            for issue in issues
+            if "triage-pending" in extract_label_names(issue.get("labels", []))
+        )
+        if len(issues) < BATCH_PAGE_SIZE:
+            return pending
+        page += 1
+
+
+def _is_still_pending(issue: dict[str, Any]) -> bool:
+    """Whether a freshly fetched issue is still open and awaiting triage."""
+    return issue.get("state") == "open" and "triage-pending" in extract_label_names(
+        issue.get("labels", [])
+    )
+
+
 def run_all_pending(
     gh_client: GitHubClient,
     repo_path: pathlib.Path,
@@ -1151,64 +1187,47 @@ def run_all_pending(
         when the LLM quota was exceeded, or ``1`` when any issue failed.
     """
     failed = 0
-    page = 1
-    total_pending = 0
     logger.info("Listing open issues labeled 'triage-pending'...")
-    while True:
+    try:
+        pending = _list_all_pending_issues(gh_client)
+    except Exception as e:
+        logger.error("Failed to list triage-pending issues: %s", e)
+        return EXIT_ERROR
+
+    logger.info("Found %d triage-pending issue(s).", len(pending))
+    for snapshot in pending:
+        issue_number = snapshot.get("number")
+        if not issue_number:
+            continue
+        logger.info("Triage-all: processing issue #%d", issue_number)
         try:
-            issues = gh_client.list_issues(
-                state="open",
-                labels="triage-pending",
-                per_page=BATCH_PAGE_SIZE,
-                page=page,
-                sort="created",
-                direction="asc",
-            )
-        except Exception as e:
-            logger.error("Failed to list triage-pending issues: %s", e)
-            return EXIT_ERROR
-
-        pending = [
-            issue
-            for issue in issues
-            if "triage-pending" in extract_label_names(issue.get("labels", []))
-        ]
-        total_pending += len(pending)
-        for issue in pending:
-            issue_number = issue.get("number")
-            if not issue_number:
+            issue = gh_client.get_issue(issue_number)
+            if not _is_still_pending(issue):
+                logger.info(
+                    "Skipping #%d: closed or no longer triage-pending.", issue_number
+                )
                 continue
-            title = issue.get("title", "") or ""
-            body = issue.get("body", "") or ""
-            logger.info("Triage-all: processing issue #%d", issue_number)
-            try:
-                run_triage(
-                    issue_number=issue_number,
-                    issue_title=title,
-                    issue_body=body,
-                    issue_node_id=issue.get("node_id"),
-                    issue_labels=extract_label_names(issue.get("labels", [])),
-                    repo_path=repo_path,
-                    gh_client=gh_client,
-                    settings=settings,
-                    resume=resume,
-                    llm_client=llm_client,
-                    web_client=web_client,
-                )
-            except QuotaExceededError as e:
-                logger.warning(
-                    "LLM API quota exceeded while triaging #%d: %s", issue_number, e
-                )
-                return EXIT_QUOTA_EXCEEDED
-            except Exception as e:
-                failed += 1
-                logger.exception("Triage failed for issue #%d: %s", issue_number, e)
-
-        if len(issues) < BATCH_PAGE_SIZE:
-            break
-        page += 1
-
-    logger.info("Found %d triage-pending issue(s).", total_pending)
+            run_triage(
+                issue_number=issue_number,
+                issue_title=issue.get("title", "") or "",
+                issue_body=issue.get("body", "") or "",
+                issue_node_id=issue.get("node_id"),
+                issue_labels=extract_label_names(issue.get("labels", [])),
+                repo_path=repo_path,
+                gh_client=gh_client,
+                settings=settings,
+                resume=resume,
+                llm_client=llm_client,
+                web_client=web_client,
+            )
+        except QuotaExceededError as e:
+            logger.warning(
+                "LLM API quota exceeded while triaging #%d: %s", issue_number, e
+            )
+            return EXIT_QUOTA_EXCEEDED
+        except Exception as e:
+            failed += 1
+            logger.exception("Triage failed for issue #%d: %s", issue_number, e)
 
     if failed:
         return EXIT_ERROR
