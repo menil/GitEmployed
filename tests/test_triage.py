@@ -34,6 +34,7 @@ from gitemployed.cli.triage import (
     parse_job_details,
     run_all_pending,
     run_triage,
+    score_issue,
 )
 from gitemployed.git_ops import GitOpsError
 from gitemployed.github_client import GitHubClient
@@ -498,6 +499,55 @@ def test_run_triage_mismatch(
     mock_gh_client.ensure_project_status.assert_called_once_with(
         "node_abc", "Mismatched/Closed"
     )
+
+
+def test_score_issue_approved_returns_outcome_without_git_or_tailoring(
+    mock_resume: Resume,
+    mock_settings: Settings,
+) -> None:
+    """The score phase returns an approved outcome and never tailors or uses git."""
+    mock_llm_client = mock.MagicMock(spec=LLMClient)
+    mock_llm_client.triage_job.return_value = TriageResult(
+        fit_score=4.2,
+        tech_stack_fit=4.0,
+        experience_fit=4.0,
+        location_fit=4.0,
+        salary_fit=4.0,
+        industry_fit=4.0,
+        reasoning="Strong fit.",
+    )
+    mock_gh_client = mock.MagicMock(spec=GitHubClient)
+    body = (
+        "**Company:** Acme\n"
+        "**Role:** Python Dev\n"
+        "**Apply URL:** https://acme.com\n"
+        "## Job Description\n"
+        "Need Python."
+    )
+
+    with (
+        mock.patch("gitemployed.cli.triage._create_tailored_application_branch") as git,
+        mock.patch("gitemployed.cli.triage._handle_approved_match") as tailor,
+    ):
+        outcome = score_issue(
+            issue_number=12,
+            issue_title="[Acme] Python Dev",
+            issue_body=body,
+            issue_node_id=None,
+            issue_labels=["triage-pending"],
+            gh_client=mock_gh_client,
+            settings=mock_settings,
+            resume=mock_resume,
+            llm_client=mock_llm_client,
+        )
+
+    assert outcome.approved
+    assert outcome.triage_res is not None and outcome.triage_res.fit_score == 4.2
+    assert outcome.job_details is not None
+    assert outcome.job_details["company"] == "Acme"
+    git.assert_not_called()
+    tailor.assert_not_called()
+    mock_llm_client.tailor_resume.assert_not_called()
 
 
 def test_run_triage_mismatch_no_reason_labels(

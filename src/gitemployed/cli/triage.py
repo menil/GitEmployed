@@ -5,6 +5,7 @@ and either rejects/closes the issue or tailors the resume on a Git branch.
 """
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import logging
@@ -964,21 +965,45 @@ def _handle_approved_match(
         raise
 
 
-def run_triage(
+@dataclasses.dataclass(frozen=True)
+class ScoreOutcome:
+    """Result of the side-effect-free score phase of triage.
+
+    This is the hand-off between the two triage phases: scoring produces it
+    without touching git, and the tailor phase consumes it later (possibly
+    after other issues have been scored). Carries everything tailoring
+    needs so no scoring work is repeated.
+
+    Attributes:
+        approved: True when the issue should proceed to resume tailoring.
+            Only then are ``job_details`` and ``triage_res`` guaranteed set.
+        job_details: Parsed (and possibly URL-enriched) job details.
+        triage_res: The LLM scoring result; None when scoring was skipped.
+    """
+
+    approved: bool
+    job_details: dict[str, str] | None = None
+    triage_res: TriageResult | None = None
+
+
+def score_issue(
     issue_number: int,
     issue_title: str,
     issue_body: str,
     issue_node_id: str | None,
     issue_labels: list[str],
-    repo_path: pathlib.Path,
     gh_client: GitHubClient,
     settings: Settings,
     resume: Resume,
     llm_client: LLMClient,
     web_client: Any | None = None,
     initial_status: str | None = None,
-) -> None:
-    """Orchestrate the triage and tailoring process for a single issue.
+) -> ScoreOutcome:
+    """Score a single issue without touching git.
+
+    Performs URL fetching, description checks and LLM scoring, and applies
+    GitHub-side outcomes for non-approved issues (mismatch, parked). Approved
+    issues are returned for the tailor phase to act on.
 
     Args:
         issue_number: The issue number to triage.
@@ -986,7 +1011,6 @@ def run_triage(
         issue_body: The markdown body of the issue.
         issue_node_id: The node ID of the issue (needed for Projects V2).
         issue_labels: List of label names on the issue.
-        repo_path: Path to the local git repository.
         gh_client: The GitHub client to interact with the repository.
         settings: Parsed Settings object.
         resume: Parsed base Resume object.
@@ -1030,7 +1054,7 @@ def run_triage(
             )
             flag_needs_description(issue_number, gh_client, issue_labels)
             post_fetch_failure_comment(issue_number, gh_client, apply_url, str(e))
-            return
+            return ScoreOutcome(approved=False)
         if placeholder_description:
             # Company/role/location were already parsed from the issue body, so
             # keep them and only substitute the fetched description.
@@ -1060,7 +1084,7 @@ def run_triage(
             "This issue has no job description to evaluate. "
             f"{_NEEDS_DESCRIPTION_INSTRUCTIONS}",
         )
-        return
+        return ScoreOutcome(approved=False)
 
     if NEEDS_DESCRIPTION_LABEL in issue_labels:
         gh_client.remove_label(issue_number, NEEDS_DESCRIPTION_LABEL)
@@ -1089,7 +1113,7 @@ def run_triage(
             "posting (for example a login or bot-check page), so I didn't score "
             f"it. {_NEEDS_DESCRIPTION_INSTRUCTIONS}",
         )
-        return
+        return ScoreOutcome(approved=False)
 
     # Update issue title to follow the canonical [Company] Role format
     company = job_details.get("company", DEFAULT_COMPANY)
@@ -1116,20 +1140,61 @@ def run_triage(
             fit_threshold=settings.fit_threshold,
             gh_client=gh_client,
         )
-    else:
-        _handle_approved_match(
-            issue_number=issue_number,
-            issue_node_id=issue_node_id,
-            issue_labels=issue_labels,
-            job_details=job_details,
-            triage_res=triage_res,
-            repo_path=repo_path,
-            gh_client=gh_client,
-            settings=settings,
-            resume=resume,
-            llm_client=llm_client,
-            initial_status=initial_status,
+        return ScoreOutcome(
+            approved=False, job_details=job_details, triage_res=triage_res
         )
+    return ScoreOutcome(approved=True, job_details=job_details, triage_res=triage_res)
+
+
+def run_triage(
+    issue_number: int,
+    issue_title: str,
+    issue_body: str,
+    issue_node_id: str | None,
+    issue_labels: list[str],
+    repo_path: pathlib.Path,
+    gh_client: GitHubClient,
+    settings: Settings,
+    resume: Resume,
+    llm_client: LLMClient,
+    web_client: Any | None = None,
+    initial_status: str | None = None,
+) -> None:
+    """Orchestrate the triage and tailoring process for a single issue.
+
+    Runs the score phase, then the tailor phase when the issue is approved.
+    """
+    outcome = score_issue(
+        issue_number=issue_number,
+        issue_title=issue_title,
+        issue_body=issue_body,
+        issue_node_id=issue_node_id,
+        issue_labels=issue_labels,
+        gh_client=gh_client,
+        settings=settings,
+        resume=resume,
+        llm_client=llm_client,
+        web_client=web_client,
+        initial_status=initial_status,
+    )
+    if not outcome.approved:
+        return
+    if outcome.job_details is None or outcome.triage_res is None:
+        # Not an assert: those are stripped under ``python -O``.
+        raise RuntimeError("Approved ScoreOutcome is missing scoring results.")
+    _handle_approved_match(
+        issue_number=issue_number,
+        issue_node_id=issue_node_id,
+        issue_labels=issue_labels,
+        job_details=outcome.job_details,
+        triage_res=outcome.triage_res,
+        repo_path=repo_path,
+        gh_client=gh_client,
+        settings=settings,
+        resume=resume,
+        llm_client=llm_client,
+        initial_status=initial_status,
+    )
 
 
 def _list_all_pending_issues(gh_client: GitHubClient) -> list[dict[str, Any]]:
