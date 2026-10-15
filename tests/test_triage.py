@@ -2379,6 +2379,7 @@ def test_main_all_pending_mode(
     assert call_kwargs["settings"] == mock_settings
     assert call_kwargs["resume"] == mock_resume
     assert call_kwargs["repo_path"] == pathlib.Path().resolve()
+    assert call_kwargs["max_workers"] == mock_settings.triage_concurrency
     mock_get_llm.assert_called_once()
 
 

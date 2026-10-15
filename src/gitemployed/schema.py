@@ -9,6 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 from gitemployed.fit_grades import FIT_GRADE_B_MIN
 
+# Conservative so concurrent scoring stays under LLM provider rate limits;
+# 1 reproduces the previous strictly sequential behavior.
+DEFAULT_TRIAGE_CONCURRENCY = 3
+
 
 class ValidationError(ValueError):
     """Raised when configuration or resume data validation fails."""
@@ -441,6 +445,7 @@ class Settings(BaseModel):
     model_config = ConfigDict(extra="ignore", arbitrary_types_allowed=True)
 
     fit_threshold: float = FIT_GRADE_B_MIN
+    triage_concurrency: int = DEFAULT_TRIAGE_CONCURRENCY
     search: SearchConfig | Any = Field(default_factory=SearchConfig)
     custom_queries: list[str] | None = None
     projects_v2: ProjectsV2Config | Any = None
@@ -462,6 +467,18 @@ class Settings(BaseModel):
         if not (1.0 <= val <= 5.0):
             raise ValidationError("fit_threshold must be between 1.0 and 5.0.")
         return val
+
+    @field_validator("triage_concurrency", mode="before")
+    @classmethod
+    def _validate_triage_concurrency(cls, v: Any) -> int:
+        if v is None:
+            return DEFAULT_TRIAGE_CONCURRENCY
+        # bool is a subclass of int, so True would otherwise pass as 1.
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ValidationError("triage_concurrency must be an integer.")
+        if v < 1:
+            raise ValidationError("triage_concurrency must be at least 1.")
+        return v
 
     @field_validator("custom_queries", mode="before")
     @classmethod

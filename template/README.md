@@ -22,6 +22,7 @@ Per-user options live in `config/settings.yaml` and are edited directly in that 
 - Your resume's `basics.location` fields (`city`, `state`, `countryCode`) drive the search location — include all three for best results with `hybrid`/`onsite` modes
 - `search.enabled` (set to `false` to pause daily scraping)
 - `fit_threshold` (minimum fit score, `1.0`–`5.0`, default `3.5`)
+- `triage_concurrency` (issues scored in parallel, integer ≥ `1`, default `3`; `1` scores one at a time)
 
 ### Resume theme
 

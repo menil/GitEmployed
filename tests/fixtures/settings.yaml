@@ -4,6 +4,10 @@
 # The AI Triage evaluates fit across tech stack, experience, location, salary, and domain.
 fit_threshold: 3.5
 
+# Maximum number of pending issues scored concurrently by AI Triage.
+# Lower it if you hit LLM rate limits; 1 scores issues one at a time.
+triage_concurrency: 3
+
 # Search settings for the job scraper bot (scrape.py)
 search:
   # Enable or disable the daily automated scraping action (set to false to pause search)

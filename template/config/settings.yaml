@@ -4,6 +4,10 @@
 # The AI Triage evaluates fit across tech stack, experience, location, salary, and domain.
 fit_threshold: 3.5
 
+# Maximum number of pending issues scored concurrently by AI Triage.
+# Lower it if you hit LLM rate limits; 1 scores issues one at a time.
+triage_concurrency: 3
+
 # Visual theme for resumes/resume.pdf, sourced from the JSON Resume theme
 # ecosystem (https://jsonresume.org/themes) and rendered via the `resumed`
 # CLI. Not set here, or missing entirely (e.g. a repo installed before this
