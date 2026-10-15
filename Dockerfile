@@ -90,13 +90,19 @@ FROM runner-base AS slim
 
 WORKDIR /workspace
 
-# Copy the project so uv can build and install it. README.md is required:
+# Install third-party dependencies first, from the manifests alone, so this
+# expensive layer is cached until pyproject.toml or uv.lock change rather than
+# on every source edit.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project
+
+# Then copy the project so uv can build and install it. README.md is required:
 # pyproject.toml declares it as the package readme, so the build fails without it.
-COPY pyproject.toml uv.lock README.md ./
+COPY README.md ./
 COPY src ./src
 
-# Sync dependencies AND install the project system-wide, so the gitemployed CLI
-# runs from any working directory without PYTHONPATH or a src/ checkout
+# Install the project system-wide, so the gitemployed CLI runs from any working
+# directory without PYTHONPATH or a src/ checkout
 RUN uv sync --frozen
 
 # Stage 5: Full runner image (default)
@@ -105,10 +111,15 @@ FROM full-tools AS full
 
 WORKDIR /workspace
 
-# Copy the project so uv can build and install it.
-COPY pyproject.toml uv.lock README.md ./
+# Install third-party dependencies first so this layer is cached across source
+# edits (see the slim stage).
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project
+
+# Then copy the project so uv can build and install it.
+COPY README.md ./
 COPY src ./src
 
-# Sync dependencies AND install the project system-wide
+# Install the project system-wide
 RUN uv sync --frozen
 

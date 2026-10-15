@@ -30,7 +30,7 @@ jobs:
       image: ghcr.io/menil/gitemployed:slim
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run Status Transition Script
         run: python -m gitemployed.cli.status_transition --event-path "$GITHUB_EVENT_PATH"

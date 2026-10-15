@@ -27,7 +27,7 @@ jobs:
       image: ghcr.io/menil/gitemployed:slim
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set Badge (Running)
         if: github.repository != vars.TEMPLATE_REPO
@@ -89,7 +89,7 @@ jobs:
       image: ghcr.io/menil/gitemployed:latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set Badge (Running)
         if: github.repository != vars.TEMPLATE_REPO
