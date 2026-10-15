@@ -6,6 +6,8 @@ import logging
 import os
 import pathlib
 import sys
+import threading
+import time
 from typing import Any
 from unittest import mock
 
@@ -16,6 +18,7 @@ from gitemployed.cli.triage import (
     BATCH_PAGE_SIZE,
     EXIT_ERROR,
     EXIT_QUOTA_EXCEEDED,
+    EXIT_SUCCESS,
     FIT_CATEGORY_MISMATCH_LABELS,
     INLINE_DIFF_MAX_CHARS,
     JobFetchError,
@@ -2332,6 +2335,238 @@ def test_run_all_pending_returns_quota_exit_code(
 
     assert exit_code == EXIT_QUOTA_EXCEEDED
     assert mock_score_issue.call_count == 1
+
+
+def _pending_gh_client(numbers: list[int]) -> mock.MagicMock:
+    """Build a GitHub client serving the given open triage-pending issues."""
+    issues = [
+        {
+            "number": n,
+            "title": f"Job {n}",
+            "body": "Body",
+            "node_id": f"node_{n}",
+            "labels": [{"name": "triage-pending"}],
+        }
+        for n in numbers
+    ]
+    client = mock.MagicMock(spec=GitHubClient)
+    client.list_issues.return_value = issues
+    _serve_open_issues(client, issues)
+    return client
+
+
+def _approved_outcome() -> ScoreOutcome:
+    return ScoreOutcome(
+        approved=True, job_details=mock.MagicMock(), triage_res=mock.MagicMock()
+    )
+
+
+def _run_batch(
+    gh_client: mock.MagicMock,
+    resume: Resume,
+    settings: Settings,
+    max_workers: int,
+) -> int:
+    return run_all_pending(
+        gh_client=gh_client,
+        repo_path=pathlib.Path("/repo"),
+        settings=settings,
+        resume=resume,
+        llm_client=mock.MagicMock(spec=LLMClient),
+        max_workers=max_workers,
+    )
+
+
+def test_run_all_pending_scores_issues_concurrently(
+    mock_resume: Resume, mock_settings: Settings
+) -> None:
+    """All issues are in flight at once, up to the worker cap."""
+    # The barrier only releases when 3 scorers wait together, so a sequential
+    # implementation breaks it (BrokenBarrierError -> failed issue -> exit 1).
+    barrier = threading.Barrier(3, timeout=5)
+
+    def fake_score(**_: Any) -> ScoreOutcome:
+        barrier.wait()
+        return ScoreOutcome(approved=False)
+
+    with mock.patch("gitemployed.cli.triage.score_issue", side_effect=fake_score) as m:
+        exit_code = _run_batch(
+            _pending_gh_client([1, 2, 3]), mock_resume, mock_settings, 3
+        )
+
+    assert exit_code == EXIT_SUCCESS
+    assert m.call_count == 3
+
+
+def test_run_all_pending_never_exceeds_worker_cap(
+    mock_resume: Resume, mock_settings: Settings
+) -> None:
+    """No more than max_workers issues are scored at the same time."""
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    def fake_score(**_: Any) -> ScoreOutcome:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.02)
+        with lock:
+            active -= 1
+        return ScoreOutcome(approved=False)
+
+    with mock.patch("gitemployed.cli.triage.score_issue", side_effect=fake_score) as m:
+        exit_code = _run_batch(
+            _pending_gh_client(list(range(1, 9))), mock_resume, mock_settings, 2
+        )
+
+    assert exit_code == EXIT_SUCCESS
+    assert m.call_count == 8
+    assert peak <= 2
+
+
+def test_run_all_pending_quota_abort_stops_remaining_work(
+    mock_resume: Resume, mock_settings: Settings
+) -> None:
+    """A quota error stops queued issues from being scored or tailored."""
+    with (
+        mock.patch(
+            "gitemployed.cli.triage.score_issue",
+            side_effect=QuotaExceededError("quota"),
+        ) as score,
+        mock.patch("gitemployed.cli.triage._handle_approved_match") as tailor,
+    ):
+        exit_code = _run_batch(
+            _pending_gh_client([1, 2, 3, 4, 5]), mock_resume, mock_settings, 1
+        )
+
+    assert exit_code == EXIT_QUOTA_EXCEEDED
+    assert score.call_count == 1
+    tailor.assert_not_called()
+
+
+def test_run_all_pending_single_failure_does_not_stop_batch(
+    mock_resume: Resume, mock_settings: Settings
+) -> None:
+    """One failing issue is counted; the others still score and tailor."""
+
+    def fake_score(*, issue_number: int, **_: Any) -> ScoreOutcome:
+        if issue_number == 2:
+            raise ValueError("boom")
+        return _approved_outcome()
+
+    with (
+        mock.patch("gitemployed.cli.triage.score_issue", side_effect=fake_score),
+        mock.patch("gitemployed.cli.triage._handle_approved_match") as tailor,
+    ):
+        exit_code = _run_batch(
+            _pending_gh_client([1, 2, 3]), mock_resume, mock_settings, 3
+        )
+
+    assert exit_code == EXIT_ERROR
+    tailored = sorted(c.kwargs["issue_number"] for c in tailor.call_args_list)
+    assert tailored == [1, 3]
+
+
+def test_run_all_pending_tailors_serially_after_all_scoring(
+    mock_resume: Resume, mock_settings: Settings
+) -> None:
+    """Tailoring never overlaps, and starts only once scoring has finished."""
+    lock = threading.Lock()
+    events: list[str] = []
+    active = 0
+    peak = 0
+
+    def fake_score(**_: Any) -> ScoreOutcome:
+        time.sleep(0.01)
+        with lock:
+            events.append("score")
+        return _approved_outcome()
+
+    def fake_tailor(*, issue_number: int, **_: Any) -> None:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            events.append(f"tailor-{issue_number}")
+        time.sleep(0.01)
+        with lock:
+            active -= 1
+
+    with (
+        mock.patch("gitemployed.cli.triage.score_issue", side_effect=fake_score),
+        mock.patch(
+            "gitemployed.cli.triage._handle_approved_match", side_effect=fake_tailor
+        ),
+    ):
+        exit_code = _run_batch(
+            _pending_gh_client([3, 1, 2]), mock_resume, mock_settings, 3
+        )
+
+    assert exit_code == EXIT_SUCCESS
+    assert peak == 1
+    # Issues were created as [3, 1, 2] and scoring finishes in arbitrary order;
+    # run_all_pending sorts approved issues by number before tailoring so the
+    # tailor order is deterministic.
+    assert events == ["score"] * 3 + ["tailor-1", "tailor-2", "tailor-3"]
+
+
+def test_run_all_pending_quota_during_scoring_skips_tailoring(
+    mock_resume: Resume, mock_settings: Settings
+) -> None:
+    """Issues approved before a quota error are left pending, not tailored."""
+
+    def fake_score(*, issue_number: int, **_: Any) -> ScoreOutcome:
+        if issue_number == 2:
+            raise QuotaExceededError("quota")
+        return _approved_outcome()
+
+    with (
+        mock.patch("gitemployed.cli.triage.score_issue", side_effect=fake_score),
+        mock.patch("gitemployed.cli.triage._handle_approved_match") as tailor,
+    ):
+        exit_code = _run_batch(
+            _pending_gh_client([1, 2]), mock_resume, mock_settings, 1
+        )
+
+    assert exit_code == EXIT_QUOTA_EXCEEDED
+    tailor.assert_not_called()
+
+
+def test_run_all_pending_tailor_quota_and_failure_handling(
+    mock_resume: Resume, mock_settings: Settings
+) -> None:
+    """A tailor failure is counted and skipped; tailor quota aborts the run."""
+    with (
+        mock.patch(
+            "gitemployed.cli.triage.score_issue", return_value=_approved_outcome()
+        ),
+        mock.patch(
+            "gitemployed.cli.triage._handle_approved_match",
+            side_effect=[ValueError("boom"), None],
+        ) as tailor,
+    ):
+        exit_code = _run_batch(
+            _pending_gh_client([1, 2]), mock_resume, mock_settings, 1
+        )
+    assert exit_code == EXIT_ERROR
+    assert tailor.call_count == 2
+
+    with (
+        mock.patch(
+            "gitemployed.cli.triage.score_issue", return_value=_approved_outcome()
+        ),
+        mock.patch(
+            "gitemployed.cli.triage._handle_approved_match",
+            side_effect=QuotaExceededError("quota"),
+        ) as tailor,
+    ):
+        exit_code = _run_batch(
+            _pending_gh_client([1, 2]), mock_resume, mock_settings, 1
+        )
+    assert exit_code == EXIT_QUOTA_EXCEEDED
+    assert tailor.call_count == 1
 
 
 @mock.patch("gitemployed.cli.triage.get_llm_client")
