@@ -26,8 +26,8 @@ dependencies = [
     # resolved version.
     "ddgs>=9.14.4",
     "trafilatura>=2.2.0",
-    # numpy>=1.26.0 provides prebuilt wheels for Python 3.12+ and avoids distutils
-    "numpy>=1.26.0",
+    # numpy>=2.3.0 is the first release with prebuilt Python 3.14 wheels
+    "numpy>=2.3.0",
     "pandas>=2.2.0",
     # openpyxl is required as pandas' XLSX write engine for
     # DataFrame.to_excel(engine="openpyxl") (specs/esd-export.md §6.2).
