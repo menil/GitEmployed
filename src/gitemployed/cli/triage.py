@@ -14,6 +14,8 @@ import pathlib
 import re
 import sys
 import tempfile
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from typing import Any
 
 from gitemployed.cli import add_repo_path_argument, resolve_repo_path, setup_logging
@@ -67,6 +69,10 @@ type ExitCode = EXIT_SUCCESS | EXIT_ERROR | EXIT_QUOTA_EXCEEDED
 
 # Maximum number of pending issues retrieved in each batch API request.
 BATCH_PAGE_SIZE = 100
+
+# Upper bound on concurrently scored issues. Scoring is I/O bound (LLM and
+# HTTP calls) but unbounded fan-out would trip provider rate limits.
+DEFAULT_SCORING_WORKERS = 3
 
 # Sub-scores below this threshold are flagged with a category mismatch label.
 CATEGORY_MISMATCH_THRESHOLD = 3.0
@@ -1233,6 +1239,59 @@ def _is_still_pending(issue: dict[str, Any]) -> bool:
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class _ScoredIssue:
+    """An issue scored by a worker, ready for the (serial) tailor phase."""
+
+    issue_number: int
+    issue_node_id: str | None
+    issue_labels: list[str]
+    outcome: ScoreOutcome
+
+
+def _score_pending_issue(
+    issue_number: int,
+    gh_client: GitHubClient,
+    settings: Settings,
+    resume: Resume,
+    llm_client: LLMClient,
+    web_client: Any | None,
+    stop: threading.Event,
+) -> _ScoredIssue | None:
+    """Score one pending issue; runs on a worker thread and never touches git.
+
+    Returns None when the issue was skipped (stop requested, or it is no
+    longer pending), so the caller has nothing to tailor.
+    """
+    if stop.is_set():
+        return None
+    logger.info("Triage-all: processing issue #%d", issue_number)
+    issue = gh_client.get_issue(issue_number)
+    if not _is_still_pending(issue):
+        logger.info("Skipping #%d: closed or no longer triage-pending.", issue_number)
+        return None
+    labels = extract_label_names(issue.get("labels", []))
+    try:
+        outcome = score_issue(
+            issue_number=issue_number,
+            issue_title=issue.get("title", "") or "",
+            issue_body=issue.get("body", "") or "",
+            issue_node_id=issue.get("node_id"),
+            issue_labels=labels,
+            gh_client=gh_client,
+            settings=settings,
+            resume=resume,
+            llm_client=llm_client,
+            web_client=web_client,
+        )
+    except QuotaExceededError:
+        # Signal from the worker itself so queued issues stop immediately,
+        # rather than racing the main thread's handling of this future.
+        stop.set()
+        raise
+    return _ScoredIssue(issue_number, issue.get("node_id"), labels, outcome)
+
+
 def run_all_pending(
     gh_client: GitHubClient,
     repo_path: pathlib.Path,
@@ -1240,12 +1299,16 @@ def run_all_pending(
     resume: Resume,
     llm_client: LLMClient,
     web_client: Any | None = None,
+    max_workers: int = DEFAULT_SCORING_WORKERS,
 ) -> ExitCode:
     """Triage every open issue carrying the ``triage-pending`` label.
 
     Used by the ``--all-pending`` mode invoked from the ``workflow_run``
-    trigger (scraper completion). Individual issue failures are logged and
-    do not abort the batch, so one broken posting never blocks the rest.
+    trigger (scraper completion). Issues are scored concurrently on at most
+    ``max_workers`` threads; approved matches are tailored on the calling
+    thread because tailoring checks out branches in the one shared working
+    tree. Individual issue failures are logged and do not abort the batch,
+    so one broken posting never blocks the rest.
 
     Returns:
         A process exit code: ``0`` on full success, ``EXIT_QUOTA_EXCEEDED``
@@ -1260,44 +1323,77 @@ def run_all_pending(
         return EXIT_ERROR
 
     logger.info("Found %d triage-pending issue(s).", len(pending))
-    for snapshot in pending:
-        issue_number = snapshot.get("number")
-        if not issue_number:
-            continue
-        logger.info("Triage-all: processing issue #%d", issue_number)
-        try:
-            issue = gh_client.get_issue(issue_number)
-            if not _is_still_pending(issue):
-                logger.info(
-                    "Skipping #%d: closed or no longer triage-pending.", issue_number
-                )
-                continue
-            run_triage(
-                issue_number=issue_number,
-                issue_title=issue.get("title", "") or "",
-                issue_body=issue.get("body", "") or "",
-                issue_node_id=issue.get("node_id"),
-                issue_labels=extract_label_names(issue.get("labels", [])),
-                repo_path=repo_path,
-                gh_client=gh_client,
-                settings=settings,
-                resume=resume,
-                llm_client=llm_client,
-                web_client=web_client,
-            )
-        except QuotaExceededError as e:
-            logger.warning(
-                "LLM API quota exceeded while triaging #%d: %s", issue_number, e
-            )
-            return EXIT_QUOTA_EXCEEDED
-        except Exception as e:
-            failed += 1
-            logger.exception("Triage failed for issue #%d: %s", issue_number, e)
+    # Shared stop signal: once quota is hit, queued issues must not start.
+    stop = threading.Event()
+    quota_exceeded = False
 
+    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
+        futures: dict[Future[_ScoredIssue | None], int] = {}
+        for snapshot in pending:
+            issue_number = snapshot.get("number")
+            if not issue_number:
+                continue
+            future = pool.submit(
+                _score_pending_issue,
+                issue_number,
+                gh_client,
+                settings,
+                resume,
+                llm_client,
+                web_client,
+                stop,
+            )
+            futures[future] = issue_number
+
+        for future in as_completed(futures):
+            issue_number = futures[future]
+            try:
+                scored = future.result()
+                if scored is not None and scored.outcome.approved:
+                    _tailor_scored_issue(
+                        scored, repo_path, gh_client, settings, resume, llm_client
+                    )
+            except QuotaExceededError as e:
+                logger.warning(
+                    "LLM API quota exceeded while triaging #%d: %s", issue_number, e
+                )
+                quota_exceeded = True
+                stop.set()
+            except Exception as e:
+                failed += 1
+                logger.exception("Triage failed for issue #%d: %s", issue_number, e)
+
+    if quota_exceeded:
+        return EXIT_QUOTA_EXCEEDED
     if failed:
         return EXIT_ERROR
 
     return EXIT_SUCCESS
+
+
+def _tailor_scored_issue(
+    scored: _ScoredIssue,
+    repo_path: pathlib.Path,
+    gh_client: GitHubClient,
+    settings: Settings,
+    resume: Resume,
+    llm_client: LLMClient,
+) -> None:
+    """Run the git-mutating tailor phase for one approved, scored issue."""
+    outcome = scored.outcome
+    assert outcome.job_details is not None and outcome.triage_res is not None
+    _handle_approved_match(
+        issue_number=scored.issue_number,
+        issue_node_id=scored.issue_node_id,
+        issue_labels=scored.issue_labels,
+        job_details=outcome.job_details,
+        triage_res=outcome.triage_res,
+        repo_path=repo_path,
+        gh_client=gh_client,
+        settings=settings,
+        resume=resume,
+        llm_client=llm_client,
+    )
 
 
 def main() -> None:
