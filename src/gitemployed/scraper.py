@@ -303,8 +303,9 @@ def generate_queries(
 def sanitize_company_for_search(company: str) -> str:
     """Sanitize company name for use in GitHub issue search queries.
 
-    Strips quotes, colons, brackets, and extra whitespace to ensure safe query
-    syntax on the GitHub Search API.
+    Strips quotes, brackets, backslashes, and extra whitespace to ensure safe query
+    syntax in GitHub Search phrase queries. Preserves colons within the company
+    name (e.g., 'Re:Build') so company tokenization is not corrupted.
 
     Args:
         company: Raw company name string.
@@ -314,7 +315,7 @@ def sanitize_company_for_search(company: str) -> str:
     """
     if not company:
         return ""
-    return re.sub(r'["\[\]:]', "", company).strip()
+    return re.sub(r'["\[\]\\]', "", company).strip()
 
 
 def fetch_company_existing_records(

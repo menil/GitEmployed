@@ -993,8 +993,13 @@ def test_sanitize_company_for_search() -> None:
     """Verify company name sanitization for GitHub search syntax."""
     assert sanitize_company_for_search("") == ""
     assert sanitize_company_for_search('PitchBook, "Inc."') == "PitchBook, Inc."
-    assert sanitize_company_for_search("[Acme] Corp:") == "Acme Corp"
+    assert sanitize_company_for_search("[Acme] Corp") == "Acme Corp"
     assert sanitize_company_for_search("  Amazon.com  ") == "Amazon.com"
+    assert (
+        sanitize_company_for_search("Re:Build Manufacturing")
+        == "Re:Build Manufacturing"
+    )
+    assert sanitize_company_for_search(r"Company\Name") == "CompanyName"
 
 
 def test_fetch_company_existing_records() -> None:
@@ -1019,6 +1024,29 @@ def test_fetch_company_existing_records() -> None:
     assert "lead software engineer" in roles
     assert "linkedin:4421986211" in urls
     assert "indeed:abcdef12345" in urls
+
+
+def test_fetch_company_existing_records_with_colon() -> None:
+    """Verify fetching existing records for a company with an internal colon."""
+    mock_client = MagicMock()
+    mock_client.repo = "owner/repo"
+    mock_client.search_issues.return_value = [
+        {
+            "title": "[Re:Build Manufacturing] Senior Backend Engineer",
+            "body": "- **Apply URL:** https://www.linkedin.com/jobs/view/4461744897",
+        },
+    ]
+
+    roles, urls = fetch_company_existing_records(
+        mock_client, "Re:Build Manufacturing", min_delay_seconds=0
+    )
+    mock_client.search_issues.assert_called_once_with(
+        'repo:owner/repo is:issue in:title "[Re:Build Manufacturing]"',
+        per_page=100,
+        page=1,
+    )
+    assert "senior backend engineer" in roles
+    assert "linkedin:4461744897" in urls
 
 
 def test_fetch_company_existing_records_error_handling() -> None:
