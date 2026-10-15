@@ -1218,3 +1218,14 @@ def test_settings_gmail_not_a_dict_raises() -> None:
     msg = "gmail configuration must be a dictionary"
     with pytest.raises(ValidationError, match=msg):
         Settings.from_dict({"gmail": "not-a-dict"})  # type: ignore
+
+
+def test_triage_concurrency_defaults_and_validation() -> None:
+    """triage_concurrency defaults to 3, accepts >= 1, rejects anything else."""
+    assert Settings.from_dict({}).triage_concurrency == 3
+    assert Settings.from_dict({"triage_concurrency": None}).triage_concurrency == 3
+    assert Settings.from_dict({"triage_concurrency": 1}).triage_concurrency == 1
+
+    for bad in (0, -2, True, "3", 2.5):
+        with pytest.raises(ValidationError, match="triage_concurrency"):
+            Settings.from_dict({"triage_concurrency": bad})

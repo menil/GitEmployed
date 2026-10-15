@@ -97,6 +97,9 @@ Controls search preferences and the triage threshold:
 # Minimum fit score (1.0 to 5.0) required to tailor a resume and apply.
 fit_threshold: 3.5
 
+# Issues scored in parallel by AI Triage (integer >= 1; 1 = one at a time).
+triage_concurrency: 3
+
 # Visual theme for resumes/resume.pdf, from the JSON Resume theme ecosystem.
 theme: "@jsonresume/jsonresume-theme-professional@1.0.22"
 

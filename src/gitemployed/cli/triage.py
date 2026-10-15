@@ -46,7 +46,7 @@ from gitemployed.renderer import (
     ensure_theme_installed,
     generate_pdf_diff,
 )
-from gitemployed.schema import Resume, Settings
+from gitemployed.schema import DEFAULT_TRIAGE_CONCURRENCY, Resume, Settings
 from gitemployed.status_model import FIT_CATEGORY_MISMATCH_LABELS, LABEL_TO_STATUS
 from gitemployed.web import WebClient
 
@@ -70,9 +70,6 @@ type ExitCode = EXIT_SUCCESS | EXIT_ERROR | EXIT_QUOTA_EXCEEDED
 # Maximum number of pending issues retrieved in each batch API request.
 BATCH_PAGE_SIZE = 100
 
-# Upper bound on concurrently scored issues. Scoring is I/O bound (LLM and
-# HTTP calls) but unbounded fan-out would trip provider rate limits.
-DEFAULT_SCORING_WORKERS = 3
 
 # Sub-scores below this threshold are flagged with a category mismatch label.
 CATEGORY_MISMATCH_THRESHOLD = 3.0
@@ -1299,7 +1296,7 @@ def run_all_pending(
     resume: Resume,
     llm_client: LLMClient,
     web_client: Any | None = None,
-    max_workers: int = DEFAULT_SCORING_WORKERS,
+    max_workers: int = DEFAULT_TRIAGE_CONCURRENCY,
 ) -> ExitCode:
     """Triage every open issue carrying the ``triage-pending`` label.
 
@@ -1507,6 +1504,7 @@ def main() -> None:
                 resume=resume,
                 llm_client=llm_client,
                 web_client=web_client,
+                max_workers=settings.triage_concurrency,
             )
         except QuotaExceededError as e:
             logger.warning("LLM API quota exceeded: %s", e)
