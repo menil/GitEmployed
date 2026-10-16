@@ -70,6 +70,12 @@ MISMATCH_REASON_LABELS: frozenset[str] = frozenset(
 # Label assigned to duplicate job postings.
 DUPLICATE_LABEL: str = "duplicate"
 
+# Non-lifecycle bookmark label used to flag 'ready-to-apply' roles to apply
+# for later (TODO item). Not in LIFECYCLE_LABELS (no Projects V2 column).
+# Automatically cleaned up whenever transitioning out of ready-to-apply.
+WANT_TO_APPLY_LABEL: str = "want-to-apply"
+READY_TO_APPLY_LABEL: str = "ready-to-apply"
+
 # Non-lifecycle reason labels that map to 'Mismatched/Closed' when closed or triaged.
 CLOSED_MISMATCH_REASON_LABELS: frozenset[str] = MISMATCH_REASON_LABELS | frozenset(
     {DUPLICATE_LABEL}
@@ -105,7 +111,9 @@ def sync_lifecycle_label(
 
     Removes every other ``LIFECYCLE_LABELS`` entry first, then adds the target
     (skipping the add when it is already present, so re-runs are no-ops).
-    Non-lifecycle labels (fit tiers, mismatch reasons) are left untouched.
+    Non-lifecycle labels (fit tiers, mismatch reasons) are left untouched,
+    except ``want-to-apply`` which is removed whenever ``ready-to-apply`` is
+    removed.
     Pass a pre-fetched label set as ``current_labels`` to avoid a redundant
     API round-trip; when omitted it is fetched once.
 
@@ -121,12 +129,17 @@ def sync_lifecycle_label(
     """
     if current_labels is None:
         current_labels = set(gh_client.get_labels(issue_number))
-    stale = sorted(
+    stale_labels = [
         label
         for label in current_labels
         if label in LIFECYCLE_LABELS and label != target_label
-    )
-    for label in stale:
+    ]
+    # 'want-to-apply' represents a user bookmark/TODO on a ready role. Once the
+    # issue leaves 'ready-to-apply' (e.g. applied, rejected, or mismatched),
+    # the bookmark intent is fulfilled or moot and must be cleaned up.
+    if READY_TO_APPLY_LABEL in stale_labels and WANT_TO_APPLY_LABEL in current_labels:
+        stale_labels.append(WANT_TO_APPLY_LABEL)
+    for label in sorted(stale_labels):
         gh_client.remove_label(issue_number, label)
 
     # Skip adding the generic 'triage-mismatched' label if a specific mismatch reason
@@ -163,8 +176,16 @@ def resolve_closed_lifecycle_label(labels: set[str]) -> str:
 def get_updated_lifecycle_labels(
     target_label: str, current_labels: set[str]
 ) -> set[str]:
-    """Calculate the updated set of labels after applying target lifecycle label."""
+    """Calculate the updated set of labels after applying target lifecycle label.
+
+    Removes stale lifecycle labels and adds the target. If the issue is
+    transitioning away from 'ready-to-apply', any 'want-to-apply' bookmark
+    is also discarded since the application intent is either executed or moot.
+    """
     updated = current_labels - LIFECYCLE_LABELS
+    # Evict the 'want-to-apply' bookmark when leaving 'ready-to-apply'.
+    if READY_TO_APPLY_LABEL in current_labels and target_label != READY_TO_APPLY_LABEL:
+        updated.discard(WANT_TO_APPLY_LABEL)
     if not (
         target_label == "triage-mismatched"
         and not CLOSED_MISMATCH_REASON_LABELS.isdisjoint(updated)

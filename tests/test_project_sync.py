@@ -191,6 +191,30 @@ def test_sync_event_closes_issue_on_terminal_status(
 
 
 @patch("gitemployed.cli.project_sync.GitHubClient")
+def test_sync_event_removes_ready_and_want_to_apply(
+    mock_github_client_class,
+) -> None:
+    """Verify moving card to Applied removes ready-to-apply and want-to-apply."""
+    mock_client = MagicMock()
+    mock_github_client_class.return_value = mock_client
+    mock_client.resolve_issue_number.return_value = 42
+    mock_client.get_labels.return_value = ["ready-to-apply", "want-to-apply"]
+    mock_client.project_id = "PVT_TEST_123"
+
+    with (
+        in_memory_event(project_item_event("Applied")),
+        patch.dict(os.environ, DEFAULT_ENV, clear=True),
+        patch("sys.argv", DEFAULT_ARGV),
+    ):
+        main()
+
+    assert mock_client.remove_label.call_count == 2
+    mock_client.remove_label.assert_any_call(42, "ready-to-apply")
+    mock_client.remove_label.assert_any_call(42, "want-to-apply")
+    mock_client.add_labels.assert_called_once_with(42, ["applied"])
+
+
+@patch("gitemployed.cli.project_sync.GitHubClient")
 def test_sync_event_close_failure_is_resilient(
     mock_github_client_class,
     caplog: pytest.LogCaptureFixture,
