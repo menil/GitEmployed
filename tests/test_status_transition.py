@@ -307,6 +307,37 @@ def test_transition_removes_stale_sibling_lifecycle_labels(
 
 
 @patch("gitemployed.cli.status_transition.GitHubClient")
+def test_transition_drops_stale_lifecycle_labels_and_want_to_apply(
+    mock_github_client_class,
+) -> None:
+    """When ready-to-apply is dropped in transition, want-to-apply is also dropped."""
+    mock_client = MagicMock()
+    mock_github_client_class.return_value = mock_client
+    mock_client.get_issue.return_value = {"node_id": "ND_123"}
+    mock_client.get_labels.return_value = [
+        "applied",
+        "ready-to-apply",
+        "want-to-apply",
+        "fit:A",
+    ]
+
+    with (
+        patch.dict(os.environ, DEFAULT_ENV, clear=True),
+        patch(
+            "sys.argv", ["status_transition.py", "--issue", "42", "--label", "applied"]
+        ),
+    ):
+        main()
+
+    assert mock_client.remove_label.call_count == 2
+    mock_client.remove_label.assert_any_call(42, "ready-to-apply")
+    mock_client.remove_label.assert_any_call(42, "want-to-apply")
+    mock_client.add_labels.assert_not_called()
+    mock_client.update_project_status.assert_called_once_with("ND_123", "Applied")
+    mock_client.ensure_project_status.assert_not_called()
+
+
+@patch("gitemployed.cli.status_transition.GitHubClient")
 def test_transition_from_event_payload(
     mock_github_client_class,
 ) -> None:

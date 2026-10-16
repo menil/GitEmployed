@@ -7,8 +7,10 @@ from gitemployed.status_model import (
     DUPLICATE_LABEL,
     LABEL_TO_STATUS,
     LIFECYCLE_LABELS,
+    READY_TO_APPLY_LABEL,
     REVERSE_SYNC_STATUSES,
     STATUS_TO_LABEL,
+    WANT_TO_APPLY_LABEL,
     get_updated_lifecycle_labels,
     is_lifecycle_label_satisfied,
     resolve_closed_lifecycle_label,
@@ -245,3 +247,55 @@ def test_get_updated_lifecycle_labels_preserves_duplicate() -> None:
     assert get_updated_lifecycle_labels(
         "triage-mismatched", {"ready-to-apply", "duplicate"}
     ) == {"duplicate"}
+
+
+def test_want_to_apply_label_constant() -> None:
+    """Verify want-to-apply label constant and non-lifecycle status."""
+    assert WANT_TO_APPLY_LABEL == "want-to-apply"
+    assert READY_TO_APPLY_LABEL == "ready-to-apply"
+    assert WANT_TO_APPLY_LABEL not in LIFECYCLE_LABELS
+
+
+def test_sync_lifecycle_label_removes_want_to_apply() -> None:
+    """Verify want-to-apply is removed whenever ready-to-apply is removed."""
+    client = FakeClient(["ready-to-apply", "want-to-apply", "fit:A"])
+    sync_lifecycle_label(client, 20, "applied")
+    assert client.labels == {"fit:A", "applied"}
+    assert "ready-to-apply" in client.removed
+    assert "want-to-apply" in client.removed
+    assert "applied" in client.added
+
+
+def test_sync_lifecycle_label_preserves_want_to_apply_on_ready_target() -> None:
+    """Verify want-to-apply is preserved when target is ready-to-apply."""
+    client = FakeClient(["triage-pending", "want-to-apply", "fit:A"])
+    sync_lifecycle_label(client, 21, "ready-to-apply")
+    assert client.labels == {"fit:A", "want-to-apply", "ready-to-apply"}
+    assert client.removed == ["triage-pending"]
+    assert "ready-to-apply" in client.added
+
+
+def test_sync_lifecycle_label_preserves_want_to_apply_when_ready_absent() -> None:
+    """Verify want-to-apply is preserved when ready-to-apply is absent."""
+    client = FakeClient(["in-loop", "want-to-apply", "fit:A"])
+    sync_lifecycle_label(client, 22, "applied")
+    assert client.labels == {"fit:A", "want-to-apply", "applied"}
+    assert client.removed == ["in-loop"]
+
+
+def test_get_updated_lifecycle_labels_with_want_to_apply() -> None:
+    """Verify get_updated_lifecycle_labels evicts or preserves want-to-apply."""
+    # When ready-to-apply is removed, want-to-apply is discarded
+    assert get_updated_lifecycle_labels(
+        "applied", {"ready-to-apply", "want-to-apply", "fit:A"}
+    ) == {"applied", "fit:A"}
+
+    # When target is ready-to-apply, want-to-apply is preserved
+    assert get_updated_lifecycle_labels(
+        "ready-to-apply", {"triage-pending", "want-to-apply", "fit:A"}
+    ) == {"ready-to-apply", "want-to-apply", "fit:A"}
+
+    # When ready-to-apply was not present, want-to-apply is preserved
+    assert get_updated_lifecycle_labels(
+        "applied", {"in-loop", "want-to-apply", "fit:A"}
+    ) == {"applied", "want-to-apply", "fit:A"}
