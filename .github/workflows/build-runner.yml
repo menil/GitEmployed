@@ -38,7 +38,7 @@ jobs:
             raw-tag: slim
             sha-prefix: slim-
             cache-from: "type=gha,scope=slim"
-            cache-to: "type=gha,mode=max,scope=slim"
+            cache-to: "type=gha,mode=min,scope=slim"
           - target: full
             tag-suffix: ""
             flavor-latest: "true"
@@ -93,7 +93,7 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.image-name.outputs.image }}:ci-staging-${{ matrix.target }}-${{ github.sha }}
           cache-from: ${{ matrix.cache-from }}
-          cache-to: ${{ matrix.cache-to }}
+          cache-to: ${{ github.event_name != 'pull_request' && matrix.cache-to || '' }}
 
       - name: Smoke-test CLI in built slim image
         if: matrix.target == 'slim'
