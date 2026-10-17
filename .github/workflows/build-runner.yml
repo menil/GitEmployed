@@ -28,6 +28,26 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: slim
+            tag-suffix: "-slim"
+            flavor-latest: "false"
+            raw-tag: slim
+            sha-prefix: slim-
+            cache-from: "type=gha,scope=slim"
+            cache-to: "type=gha,mode=max,scope=slim"
+          - target: full
+            tag-suffix: ""
+            flavor-latest: "true"
+            raw-tag: latest
+            sha-prefix: ""
+            cache-from: |
+              type=gha,scope=full
+              type=gha,scope=slim
+            cache-to: "type=gha,mode=max,scope=full"
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7
@@ -51,40 +71,31 @@ jobs:
       # Tag strategy:
       # - Full image: :latest, :<sha>; tag vX.Y.Z -> :vX.Y.Z + :latest
       # - Slim image: :slim, :slim-<sha>; tag vX.Y.Z -> :vX.Y.Z-slim + :slim
-      - name: Generate Full Docker Image Tags
-        id: meta-full
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ steps.image-name.outputs.image }}
-          tags: |
-            type=raw,value=latest
-            type=ref,event=tag
-            type=sha,prefix=,format=long
-
-      - name: Generate Slim Docker Image Tags
-        id: meta-slim
+      - name: Generate Docker Image Tags
+        id: meta
         uses: docker/metadata-action@v6
         with:
           images: ${{ steps.image-name.outputs.image }}
           flavor: |
-            latest=false
+            latest=${{ matrix.flavor-latest }}
           tags: |
-            type=raw,value=slim
-            type=ref,event=tag,suffix=-slim
-            type=sha,prefix=slim-,format=long
+            type=raw,value=${{ matrix.raw-tag }}
+            type=ref,event=tag,suffix=${{ matrix.tag-suffix }}
+            type=sha,prefix=${{ matrix.sha-prefix }},format=long
 
-      - name: Build Slim Docker Image (local, for smoke test)
+      - name: Build Docker Image (local, for smoke test)
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
-          target: slim
+          target: ${{ matrix.target }}
           load: true
-          tags: ${{ steps.image-name.outputs.image }}:ci-smoke-test-slim
-          cache-from: type=gha,scope=slim
-          cache-to: type=gha,mode=max,scope=slim
+          tags: ${{ steps.image-name.outputs.image }}:ci-smoke-test-${{ matrix.target }}
+          cache-from: ${{ matrix.cache-from }}
+          cache-to: ${{ matrix.cache-to }}
 
       - name: Smoke-test CLI in built slim image
+        if: matrix.target == 'slim'
         run: |
           docker run --rm \
             "${{ steps.image-name.outputs.image }}:ci-smoke-test-slim" \
@@ -95,19 +106,6 @@ jobs:
               python -m gitemployed.cli.respond --help
             '
 
-      - name: Build Full Docker Image (local, for smoke test)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile
-          target: full
-          load: true
-          tags: ${{ steps.image-name.outputs.image }}:ci-smoke-test
-          cache-from: |
-            type=gha,scope=full
-            type=gha,scope=slim
-          cache-to: type=gha,mode=max,scope=full
-
       # Guards against the exact class of regression this image is prone to:
       # a `oven/bun:latest` bump, a Debian `chromium` point release, or a
       # `resumed`/Puppeteer update silently breaking the hand-verified
@@ -115,39 +113,26 @@ jobs:
       # `pptruser`, `--puppeteer-arg=--no-sandbox`, the apt-installed
       # Chromium path). `docker build` succeeding proves none of that; only
       # actually running `resumed export` does.
-      - name: Smoke-test tools in built image
+      - name: Smoke-test tools in built full image
+        if: matrix.target == 'full'
         run: |
           docker run --rm \
             -v "$PWD/.github/fixtures:/work" -w /work \
-            "${{ steps.image-name.outputs.image }}:ci-smoke-test" \
+            "${{ steps.image-name.outputs.image }}:ci-smoke-test-full" \
             sh -c '
               su -s /bin/sh pptruser -c "pdf-vdiff --help" &&
               su -s /bin/sh pptruser -c "bun /opt/bun/bin/resumed export resume.json -t @jsonresume/jsonresume-theme-professional -o /tmp/resume.pdf --puppeteer-arg=--no-sandbox" &&
               [ -s /tmp/resume.pdf ]
             '
 
-      - name: Build and Push Slim Docker Image
+      - name: Build and Push Docker Image
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
-          target: slim
+          target: ${{ matrix.target }}
           push: true
-          tags: ${{ steps.meta-slim.outputs.tags }}
-          cache-from: type=gha,scope=slim
-          cache-to: type=gha,mode=max,scope=slim
-
-      - name: Build and Push Full Docker Image
-        if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile
-          target: full
-          push: true
-          tags: ${{ steps.meta-full.outputs.tags }}
-          cache-from: |
-            type=gha,scope=full
-            type=gha,scope=slim
-          cache-to: type=gha,mode=max,scope=full
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: ${{ matrix.cache-from }}
+          cache-to: ${{ matrix.cache-to }}
