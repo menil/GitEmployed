@@ -3,6 +3,7 @@
 FROM rust:1-slim-bookworm@sha256:a24e292b4af7bdee351a31d3a6379972a5652f0ea22a1b6d6883324ac4f5097c AS rust-builder
 ARG TARGETARCH
 ARG PDFIUM_VERSION=7881
+ARG PDF_VDIFF_TAG=pdf-vdiff-v0.1.3
 WORKDIR /build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,7 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-RUN cargo install --git https://github.com/menil/pdf-vdiff.git --root /opt/pdf-vdiff
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo install --git https://github.com/menil/pdf-vdiff.git --tag "${PDF_VDIFF_TAG}" --root /opt/pdf-vdiff
 
 RUN mkdir -p /opt/pdf-vdiff/lib && \
     case "${TARGETARCH:-amd64}" in \
