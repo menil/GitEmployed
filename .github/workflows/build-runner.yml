@@ -128,9 +128,12 @@ jobs:
 
       - name: Promote Docker Image Tags
         if: github.event_name != 'pull_request'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           STAGING="${{ steps.image-name.outputs.image }}:ci-staging-${{ matrix.target }}-${{ github.sha }}"
-          for tag in ${{ steps.meta.outputs.tags }}; do
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
             echo "Promoting $STAGING -> $tag"
             docker buildx imagetools create --tag "$tag" "$STAGING"
-          done
+          done <<< "$TAGS"
