@@ -28,3 +28,42 @@ updates:
           - "minor"
           - "patch"
     open-pull-requests-limit: 5
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - "dependencies"
+    groups:
+      docker-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - "dependencies"
+    groups:
+      pip-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /template
+    schedule:
+      interval: weekly
+    labels:
+      - "dependencies"
+    groups:
+      template-actions-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    open-pull-requests-limit: 5
