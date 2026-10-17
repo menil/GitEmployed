@@ -83,14 +83,15 @@ jobs:
             type=ref,event=tag,suffix=${{ matrix.tag-suffix }}
             type=sha,prefix=${{ matrix.sha-prefix }},format=long
 
-      - name: Build Docker Image (local, for smoke test)
+      - name: Build and Stage Docker Image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
           target: ${{ matrix.target }}
-          load: true
-          tags: ${{ steps.image-name.outputs.image }}:ci-smoke-test-${{ matrix.target }}
+          load: ${{ github.event_name == 'pull_request' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.image-name.outputs.image }}:ci-staging-${{ matrix.target }}-${{ github.sha }}
           cache-from: ${{ matrix.cache-from }}
           cache-to: ${{ matrix.cache-to }}
 
@@ -98,7 +99,7 @@ jobs:
         if: matrix.target == 'slim'
         run: |
           docker run --rm \
-            "${{ steps.image-name.outputs.image }}:ci-smoke-test-slim" \
+            "${{ steps.image-name.outputs.image }}:ci-staging-slim-${{ github.sha }}" \
             sh -c '
               git --version &&
               gh --version &&
@@ -118,21 +119,18 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD/.github/fixtures:/work" -w /work \
-            "${{ steps.image-name.outputs.image }}:ci-smoke-test-full" \
+            "${{ steps.image-name.outputs.image }}:ci-staging-full-${{ github.sha }}" \
             sh -c '
               su -s /bin/sh pptruser -c "pdf-vdiff --help" &&
               su -s /bin/sh pptruser -c "bun /opt/bun/bin/resumed export resume.json -t @jsonresume/jsonresume-theme-professional -o /tmp/resume.pdf --puppeteer-arg=--no-sandbox" &&
               [ -s /tmp/resume.pdf ]
             '
 
-      - name: Build and Push Docker Image
+      - name: Promote Docker Image Tags
         if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile
-          target: ${{ matrix.target }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          cache-from: ${{ matrix.cache-from }}
-          cache-to: ${{ matrix.cache-to }}
+        run: |
+          STAGING="${{ steps.image-name.outputs.image }}:ci-staging-${{ matrix.target }}-${{ github.sha }}"
+          for tag in ${{ steps.meta.outputs.tags }}; do
+            echo "Promoting $STAGING -> $tag"
+            docker buildx imagetools create --tag "$tag" "$STAGING"
+          done
