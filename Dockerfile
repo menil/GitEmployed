@@ -1,6 +1,6 @@
 # Stage 1: Build pdf-vdiff Rust CLI and download pdfium shared library
-# Uses the official rust:1-slim-bookworm (Rust 1.x stable) to satisfy MSRV for crates.io dependencies
-FROM rust:1-slim-bookworm AS rust-builder
+# Uses the official rust:1-slim-bookworm (Rust 1.x stable) pinned by immutable digest
+FROM rust:1-slim-bookworm@sha256:a24e292b4af7bdee351a31d3a6379972a5652f0ea22a1b6d6883324ac4f5097c AS rust-builder
 ARG TARGETARCH
 ARG PDFIUM_VERSION=7881
 WORKDIR /build
@@ -22,8 +22,8 @@ RUN mkdir -p /opt/pdf-vdiff/lib && \
     curl -fsSL "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/${PDFIUM_VERSION}/${PDFIUM_FILE}" | tar -xz -C /opt/pdf-vdiff/lib/
 
 # Stage 2: Base runner environment
-# Minimal shared environment with Python 3.14, git, gh, curl, and uv
-FROM python:3.14-slim-bookworm AS runner-base
+# Minimal shared environment with Python 3.14, git, gh, curl, and uv (pinned by digest)
+FROM python:3.14-slim-bookworm@sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83 AS runner-base
 
 # Prevent interactive prompts during apt package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -36,7 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv for ultra-fast python package installation
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:latest@sha256:4a1f3666816dafadd20ceb71eac9a7d56d7ef30279f7d64048519ab901ada336 /uv /uvx /bin/
 
 # Set the project environment to target system Python
 ENV UV_PROJECT_ENVIRONMENT=/usr/local
@@ -64,7 +64,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash 
 # Install Bun: the JS runtime/package manager for the JSON Resume `resumed`
 # CLI. Bun is npm-registry-compatible and ships its own npx equivalent, so no
 # separate Node/npm is needed.
-COPY --from=oven/bun:latest /usr/local/bin/bun /usr/local/bin/bunx /usr/local/bin/
+COPY --from=oven/bun:latest@sha256:ec06c3b6cea04192ae6770c434f668ca41d343ad19fa6472216c7b48be39c598 /usr/local/bin/bun /usr/local/bin/bunx /usr/local/bin/
 
 # Install pdf-vdiff binary and pdfium library from builder stage
 COPY --from=rust-builder /opt/pdf-vdiff/bin/pdf-vdiff /usr/local/bin/pdf-vdiff
