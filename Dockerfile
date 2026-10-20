@@ -26,7 +26,7 @@ RUN mkdir -p /opt/pdf-vdiff/lib && \
 
 # Stage 2: Base runner environment
 # Minimal shared environment with Python 3.14, git, gh, curl, and uv (pinned by digest)
-FROM python:3.14-slim-bookworm@sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83 AS runner-base
+FROM python:3.15-slim-bookworm@sha256:2a41267d9de9d358f77a1de356e0f16ecba8d39827855be0ce9ef4792edce402 AS runner-base
 
 # Prevent interactive prompts during apt package installation
 ENV DEBIAN_FRONTEND=noninteractive
