@@ -35,6 +35,12 @@ from gitemployed.renderer import (
 )
 from gitemployed.schema import Resume, Settings, ValidationError
 from gitemployed.scraper import ScrapedJob, parse_job_row, run_scraper
+from gitemployed.stale_cleaner import (
+    StaleCleanupSummary,
+    StaleJobEvaluation,
+    clean_stale_issues,
+    fetch_stale_candidate_issues,
+)
 
 __all__ = [
     "TriageResult",
@@ -70,4 +76,8 @@ __all__ = [
     "check_job_liveness",
     "JobLivenessStatus",
     "LivenessResult",
+    "clean_stale_issues",
+    "fetch_stale_candidate_issues",
+    "StaleCleanupSummary",
+    "StaleJobEvaluation",
 ]
