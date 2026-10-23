@@ -5,6 +5,7 @@ from gitemployed.status_model import (
     CLOSED_MISMATCH_REASON_LABELS,
     CLOSURE_LABELS,
     DUPLICATE_LABEL,
+    EXPIRED_LABEL,
     LABEL_TO_STATUS,
     LIFECYCLE_LABELS,
     READY_TO_APPLY_LABEL,
@@ -247,6 +248,55 @@ def test_get_updated_lifecycle_labels_preserves_duplicate() -> None:
     assert get_updated_lifecycle_labels(
         "triage-mismatched", {"ready-to-apply", "duplicate"}
     ) == {"duplicate"}
+
+
+def test_expired_label_in_closed_mismatch_reasons() -> None:
+    assert EXPIRED_LABEL == "expired"
+    assert EXPIRED_LABEL in CLOSED_MISMATCH_REASON_LABELS
+    assert EXPIRED_LABEL not in LIFECYCLE_LABELS
+
+
+def test_resolve_closed_lifecycle_label_with_expired() -> None:
+    assert resolve_closed_lifecycle_label({"expired"}) == "triage-mismatched"
+    assert resolve_closed_lifecycle_label({"expired", "fit:B"}) == "triage-mismatched"
+    assert (
+        resolve_closed_lifecycle_label({"expired", "ready-to-apply"})
+        == "triage-mismatched"
+    )
+
+
+def test_is_lifecycle_label_satisfied_with_expired() -> None:
+    assert is_lifecycle_label_satisfied("triage-mismatched", {"expired"}) is True
+    assert (
+        is_lifecycle_label_satisfied("triage-mismatched", {"expired", "fit:A"}) is True
+    )
+    # Siblings from LIFECYCLE_LABELS violate satisfaction
+    assert (
+        is_lifecycle_label_satisfied("triage-mismatched", {"expired", "ready-to-apply"})
+        is False
+    )
+
+
+def test_sync_lifecycle_label_skips_generic_mismatch_for_expired() -> None:
+    client = FakeClient(["expired"])
+    sync_lifecycle_label(client, 16, "triage-mismatched")
+    assert client.labels == {"expired"}
+    assert client.added == []
+    assert client.removed == []
+
+    # Stale lifecycle label is removed while expired is preserved
+    client = FakeClient(["ready-to-apply", "expired"])
+    sync_lifecycle_label(client, 16, "triage-mismatched")
+    assert client.labels == {"expired"}
+    assert "ready-to-apply" in client.removed
+    assert "triage-mismatched" not in client.added
+
+
+def test_get_updated_lifecycle_labels_preserves_expired() -> None:
+    assert get_updated_lifecycle_labels("triage-mismatched", {"expired"}) == {"expired"}
+    assert get_updated_lifecycle_labels(
+        "triage-mismatched", {"ready-to-apply", "expired"}
+    ) == {"expired"}
 
 
 def test_want_to_apply_label_constant() -> None:
