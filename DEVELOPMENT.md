@@ -48,7 +48,7 @@ The following GitHub Actions workflows manage the automated lifecycle of the scr
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `scrape-jobs.yml` | Daily cron (`0 0 * * *`) or `workflow_dispatch` | Scrapes job boards, dedupes, opens `triage-pending` issues, then auto-triages any pending issues |
+| `scrape-jobs.yml` | Daily cron (`0 0 * * *`) or `workflow_dispatch` | Sweeps expired inactive roles, scrapes job boards, dedupes, opens `triage-pending` issues, then auto-triages any pending issues |
 | `triage-issue.yml` | Issue labeled `triage-pending` | Runs the two-pass LLM triage/tailor pipeline |
 | `respond-issue.yml` | Issue comment created or issue opened | Runs the Issue Assistant: answers thread questions with web research, applies status labels from conversational intents, and auto-triages bare job-URL submissions |
 | `status-transition.yml` | Issue labeled with a lifecycle label or closed | Moves the issue card to the matching Projects V2 column |
@@ -60,6 +60,18 @@ The following GitHub Actions workflows manage the automated lifecycle of the scr
 | `sync-labels.yml` | Push to `main` | Applies issue labels from `.github/labels.yml` and migrates renamed labels (e.g. `interviewing` → `in-loop`) |
 
 These workflows run inside a pre-built Docker container hosting Bun, Chromium/Puppeteer, and uv, avoiding runner bootstrap delays.
+
+### Stale Role Cleanup
+
+Before scraping new listings each day, `scrape-jobs.yml` runs `gitemployed-clean-stale` (or `python -m gitemployed.cli.clean_stale`) to audit open `ready-to-apply` roles that haven't had any activity for > 30 days.
+
+- **Liveness Inspection:** Checks the posting's `Apply URL` for HTTP `404`/`410`, career search redirects, and explicit closure badges (*"No longer accepting applications"*, *"Position has been filled"*).
+- **Safety Guards:** Rate-limiting responses (`HTTP 429`), bot challenges (`Cloudflare`), and authentication walls are treated as inconclusive and never cause false-positive closures. Issues tagged `want-to-apply` or containing comments from the user are preserved.
+- **Closure:** Roles confirmed closed are transitioned to `Mismatched/Closed` with the `expired` label, updated on Projects V2, and closed with an explanatory comment.
+- **Manual Sweep:** You can manually run a sweep locally or via CLI:
+  ```bash
+  python -m gitemployed.cli.clean_stale --dry-run
+  ```
 
 ### Running the ESD Export
 

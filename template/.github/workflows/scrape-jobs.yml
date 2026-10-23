@@ -150,6 +150,22 @@ jobs:
           GIST_ID: ${{ vars.GIST_ID }}
           GH_TOKEN: ${{ secrets.GH_PAT }}
 
+      - name: Clean Expired Roles
+        if: steps.verify.outputs.valid == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          ARGS=()
+          if [ "${INPUT_DRY_RUN:-}" = "true" ]; then
+            ARGS+=("--dry-run")
+          fi
+          python -m gitemployed.cli.clean_stale "${ARGS[@]}"
+
       - name: Run Job Scraper
         if: steps.verify.outputs.valid == 'true'
         shell: bash
