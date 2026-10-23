@@ -75,6 +75,9 @@ CLOSED_PHRASES: tuple[str, ...] = (
 # Regex to detect LinkedIn job view paths (including slugged URLs) vs search/index paths
 LINKEDIN_VIEW_RE = re.compile(r"^/jobs/view/(?:[^/?#]*-)?\d+", re.IGNORECASE)
 
+# Regex to match 'apply' as an isolated word (preventing false matches on 'Applied')
+_APPLY_WORD_RE = re.compile(r"\bapply\b", re.IGNORECASE)
+
 _ATS_HOSTS: tuple[str, ...] = (
     "greenhouse.io",
     "lever.co",
@@ -206,6 +209,75 @@ def _check_json_ld_expiration(soup: BeautifulSoup) -> tuple[bool, str | None]:
     return False, None
 
 
+def _check_linkedin_missing_apply_cta(
+    soup: BeautifulSoup,
+    final_url: str,
+) -> tuple[bool, str | None]:
+    """Check if a LinkedIn job view page lacks an apply CTA in its topcard layout.
+
+    When a LinkedIn job stops accepting applications without redirecting or
+    displaying an explicit 'closed' text phrase, LinkedIn renders the job view
+    topcard layout but strips all apply call-to-actions (leaving an empty
+    'top-card-layout__cta-container' or omitting primary apply buttons).
+    """
+    final_parsed = urllib.parse.urlsplit(final_url)
+    final_host = final_parsed.netloc.lower().removeprefix("www.")
+
+    if not _is_linkedin_host(final_host) or not LINKEDIN_VIEW_RE.search(
+        final_parsed.path
+    ):
+        return False, None
+
+    # Resolve topcard and CTA containers via CSS selectors
+    top_card = soup.select_one(
+        ".top-card-layout, .topcard, [class*='top-card-layout__card']"
+    )
+    cta_container = (
+        top_card.select_one(
+            ".top-card-layout__cta-container, [class*='top-card-layout__cta-container']"
+        )
+        if top_card
+        else soup.select_one(
+            ".top-card-layout__cta-container, [class*='top-card-layout__cta-container']"
+        )
+    )
+
+    if not top_card and not cta_container:
+        # Not a recognizable LinkedIn topcard DOM; do not assume closed
+        return False, None
+
+    # An active, enabled primary apply button indicates an open posting
+    has_primary_cta = soup.select_one(
+        "button.top-card-layout__cta--primary, "
+        "a.top-card-layout__cta--primary, "
+        "[class*='top-card-layout__cta--primary']"
+    )
+    if (
+        has_primary_cta
+        and not has_primary_cta.has_attr("disabled")
+        and has_primary_cta.get("aria-disabled") != "true"
+    ):
+        return False, None
+
+    # Prioritize inspecting cta_container when present to avoid matching
+    # unrelated topcard anchor links (e.g., 'Applied Materials' organization link)
+    target_container = cta_container if cta_container is not None else top_card
+    for elem in target_container.find_all(["button", "a"]):
+        if elem.has_attr("disabled") or elem.get("aria-disabled") == "true":
+            continue
+        text = elem.get_text(" ", strip=True)
+        aria = elem.get("aria-label") or ""
+        tracking = (elem.get("data-tracking-control-name") or "").lower()
+        if (
+            _APPLY_WORD_RE.search(text)
+            or _APPLY_WORD_RE.search(aria)
+            or "apply" in tracking
+        ):
+            return False, None
+
+    return True, "LinkedIn job posting has no apply CTA in topcard"
+
+
 def evaluate_page_content(
     html: str,
     original_url: str,
@@ -260,6 +332,11 @@ def evaluate_page_content(
     is_expired_ld, ld_reason = _check_json_ld_expiration(soup)
     if is_expired_ld and ld_reason:
         signals.append(ld_reason)
+
+    # 6. LinkedIn topcard missing apply CTA check
+    is_missing_cta, cta_reason = _check_linkedin_missing_apply_cta(soup, final_url)
+    if is_missing_cta and cta_reason:
+        signals.append(cta_reason)
 
     if signals:
         return LivenessResult(
