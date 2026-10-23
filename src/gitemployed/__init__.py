@@ -33,7 +33,7 @@ from gitemployed.renderer import (
     compile_resume_pdf,
     ensure_theme_installed,
 )
-from gitemployed.schema import Resume, Settings, ValidationError
+from gitemployed.schema import Resume, Settings, StaleCleanupConfig, ValidationError
 from gitemployed.scraper import ScrapedJob, parse_job_row, run_scraper
 from gitemployed.stale_cleaner import (
     StaleCleanupSummary,
@@ -62,6 +62,7 @@ __all__ = [
     "GitHubClientError",
     "Resume",
     "Settings",
+    "StaleCleanupConfig",
     "ValidationError",
     "load_resume",
     "load_settings",

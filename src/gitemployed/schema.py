@@ -426,6 +426,64 @@ class ResearchConfig(BaseModel):
             raise ValidationError(f"Failed to parse ResearchConfig: {msg}") from e
 
 
+class StaleCleanupConfig(BaseModel):
+    """Configuration for cleaning up inactive, expired job postings."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = True
+    days_inactive: int = 30
+    limit: int | None = None
+    include_bookmarked: bool = False
+
+    @field_validator("enabled", "include_bookmarked", mode="before")
+    @classmethod
+    def _validate_bools(cls, v: Any, info: ValidationInfo) -> bool:
+        field_name = info.field_name
+        default_val = field_name == "enabled"
+        if v is None:
+            return default_val
+        if isinstance(v, bool):
+            return v
+        raise ValidationError(f"stale_cleanup.{field_name} must be a boolean.")
+
+    @field_validator("days_inactive", mode="before")
+    @classmethod
+    def _validate_days_inactive(cls, v: Any) -> int:
+        if v is None:
+            return 30
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ValidationError("stale_cleanup.days_inactive must be an integer.")
+        if v < 1:
+            raise ValidationError("stale_cleanup.days_inactive must be at least 1.")
+        return v
+
+    @field_validator("limit", mode="before")
+    @classmethod
+    def _validate_limit(cls, v: Any) -> int | None:
+        if v is None:
+            return None
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ValidationError("stale_cleanup.limit must be an integer or null.")
+        if v < 1:
+            raise ValidationError("stale_cleanup.limit must be at least 1.")
+        return v
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> StaleCleanupConfig:
+        """Parse stale cleanup configuration from dictionary."""
+        if not isinstance(data, dict):
+            raise ValidationError("stale_cleanup configuration must be a dictionary.")
+        try:
+            return cls.model_validate(data)
+        except pydantic.ValidationError as e:
+            first_err = e.errors()[0]
+            msg = first_err.get("msg", "")
+            if msg.startswith("Value error, "):
+                msg = msg[len("Value error, ") :]
+            raise ValidationError(f"Failed to parse StaleCleanupConfig: {msg}") from e
+
+
 _GITHUB_COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
 _NPM_PINNED_VERSION_RE = re.compile(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?")
 
@@ -452,6 +510,7 @@ class Settings(BaseModel):
     research: ResearchConfig | Any = Field(default_factory=ResearchConfig)
     theme: str | None = None
     gmail: GmailConfig | Any = None
+    stale_cleanup: StaleCleanupConfig = Field(default_factory=StaleCleanupConfig)
 
     @field_validator("fit_threshold", mode="before")
     @classmethod
@@ -539,6 +598,12 @@ class Settings(BaseModel):
             and data["gmail"] is not None
         ):
             raise ValidationError("gmail configuration must be a dictionary.")
+        if (
+            "stale_cleanup" in data
+            and not isinstance(data["stale_cleanup"], dict)
+            and data["stale_cleanup"] is not None
+        ):
+            raise ValidationError("stale_cleanup configuration must be a dictionary.")
 
         try:
             search_data = data.get("search") or {}
@@ -567,12 +632,16 @@ class Settings(BaseModel):
                 GmailConfig.from_dict(gmail_data) if gmail_data is not None else None
             )
 
+            stale_cleanup_data = data.get("stale_cleanup") or {}
+            stale_cleanup = StaleCleanupConfig.from_dict(stale_cleanup_data)
+
             payload = {
                 **data,
                 "search": search,
                 "projects_v2": projects_v2,
                 "research": research,
                 "gmail": gmail,
+                "stale_cleanup": stale_cleanup,
             }
             return cls.model_validate(payload)
         except pydantic.ValidationError as e:

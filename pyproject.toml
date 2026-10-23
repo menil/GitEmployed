@@ -45,6 +45,7 @@ gitemployed-project-sync = "gitemployed.cli.project_sync:main"
 gitemployed-status-transition = "gitemployed.cli.status_transition:main"
 gitemployed-validate-resume = "gitemployed.cli.validate_resume:main"
 gitemployed-esd-export = "gitemployed.cli.esd_export:main"
+gitemployed-clean-stale = "gitemployed.cli.clean_stale:main"
 
 [dependency-groups]
 dev = [
