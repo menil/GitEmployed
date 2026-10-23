@@ -70,6 +70,9 @@ MISMATCH_REASON_LABELS: frozenset[str] = frozenset(
 # Label assigned to duplicate job postings.
 DUPLICATE_LABEL: str = "duplicate"
 
+# Label assigned to expired / inactive job postings.
+EXPIRED_LABEL: str = "expired"
+
 # Non-lifecycle bookmark label used to flag 'ready-to-apply' roles to apply
 # for later (TODO item). Not in LIFECYCLE_LABELS (no Projects V2 column).
 # Automatically cleaned up whenever transitioning out of ready-to-apply.
@@ -78,7 +81,7 @@ READY_TO_APPLY_LABEL: str = "ready-to-apply"
 
 # Non-lifecycle reason labels that map to 'Mismatched/Closed' when closed or triaged.
 CLOSED_MISMATCH_REASON_LABELS: frozenset[str] = MISMATCH_REASON_LABELS | frozenset(
-    {DUPLICATE_LABEL}
+    {DUPLICATE_LABEL, EXPIRED_LABEL}
 )
 
 
