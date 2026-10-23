@@ -52,6 +52,14 @@ search:
   # Combine top skills with Boolean OR into a single query instead of running separate queries
   combine_skills_with_or: true
 
+# Cleanup settings for inactive, expired job postings.
+# Runs automatically before daily scraping to keep the board clean.
+stale_cleanup:
+  enabled: true
+  days_inactive: 30
+  # limit: 25  # Optional batch cap on evaluated issues (defaults to checking all qualifying issues)
+  include_bookmarked: false
+
 # Custom queries override resume-based query generation.
 # If empty or commented out, queries are auto-generated from skills and recent position title in resume.yaml.
 custom_queries: []

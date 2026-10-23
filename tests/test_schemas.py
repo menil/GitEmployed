@@ -1229,3 +1229,46 @@ def test_triage_concurrency_defaults_and_validation() -> None:
     for bad in (0, -2, True, "3", 2.5):
         with pytest.raises(ValidationError, match="triage_concurrency"):
             Settings.from_dict({"triage_concurrency": bad})
+
+
+def test_settings_stale_cleanup_defaults() -> None:
+    settings = Settings.from_dict({})
+    assert settings.stale_cleanup.enabled is True
+    assert settings.stale_cleanup.days_inactive == 30
+    assert settings.stale_cleanup.limit is None
+    assert settings.stale_cleanup.include_bookmarked is False
+
+
+def test_settings_with_stale_cleanup_parses() -> None:
+    settings = Settings.from_dict(
+        {
+            "stale_cleanup": {
+                "enabled": False,
+                "days_inactive": 14,
+                "limit": 50,
+                "include_bookmarked": True,
+            }
+        }
+    )
+    assert settings.stale_cleanup.enabled is False
+    assert settings.stale_cleanup.days_inactive == 14
+    assert settings.stale_cleanup.limit == 50
+    assert settings.stale_cleanup.include_bookmarked is True
+
+
+def test_settings_stale_cleanup_validation() -> None:
+    msg_dict = "stale_cleanup configuration must be a dictionary"
+    with pytest.raises(ValidationError, match=msg_dict):
+        Settings.from_dict({"stale_cleanup": "not-a-dict"})
+
+    msg_days = "stale_cleanup.days_inactive must be at least 1"
+    with pytest.raises(ValidationError, match=msg_days):
+        Settings.from_dict({"stale_cleanup": {"days_inactive": 0}})
+
+    msg_limit = "stale_cleanup.limit must be at least 1"
+    with pytest.raises(ValidationError, match=msg_limit):
+        Settings.from_dict({"stale_cleanup": {"limit": -5}})
+
+    msg_bool = "stale_cleanup.enabled must be a boolean"
+    with pytest.raises(ValidationError, match=msg_bool):
+        Settings.from_dict({"stale_cleanup": {"enabled": "yes"}})
