@@ -11,6 +11,11 @@ from gitemployed.git_ops import (
     slugify,
 )
 from gitemployed.github_client import GitHubClient, GitHubClientError
+from gitemployed.liveness import (
+    JobLivenessStatus,
+    LivenessResult,
+    check_job_liveness,
+)
 from gitemployed.llm import (
     ClaudeClient,
     GeminiClient,
@@ -62,4 +67,7 @@ __all__ = [
     "run_scraper",
     "ScrapedJob",
     "parse_job_row",
+    "check_job_liveness",
+    "JobLivenessStatus",
+    "LivenessResult",
 ]
