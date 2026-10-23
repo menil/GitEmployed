@@ -89,6 +89,8 @@ def test_cli_flag_overrides_passed_to_cleaner(
             "20",
             "--dry-run",
             "--include-bookmarked",
+            "--delay",
+            "3.0",
         ],
     )
     monkeypatch.setenv("GITHUB_TOKEN", "fake_token")
@@ -102,6 +104,7 @@ def test_cli_flag_overrides_passed_to_cleaner(
     assert kwargs["limit"] == 20
     assert kwargs["dry_run"] is True
     assert kwargs["include_bookmarked"] is True
+    assert kwargs["request_delay"] == 3.0
 
 
 @patch("gitemployed.cli.clean_stale.clean_stale_issues")
@@ -143,6 +146,7 @@ def test_cli_nonexistent_settings_file_falls_back_to_defaults(
     assert kwargs["days_inactive"] == 30
     assert kwargs["limit"] is None
     assert kwargs["include_bookmarked"] is False
+    assert kwargs["request_delay"] == 0.0
 
 
 @patch("gitemployed.cli.clean_stale.clean_stale_issues")
@@ -168,3 +172,110 @@ def test_cli_corrupt_settings_file_warns_and_continues(
     main()
 
     mock_clean_stale.assert_called_once()
+
+
+@patch("gitemployed.cli.clean_stale.clean_stale_issues")
+@patch("gitemployed.cli.clean_stale.load_settings")
+def test_cli_short_flag_delay(
+    mock_load_settings: MagicMock,
+    mock_clean_stale: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    settings_file = tmp_path / "settings.yaml"
+    settings_file.write_text("dummy")
+
+    mock_settings = MagicMock()
+    mock_settings.stale_cleanup.enabled = True
+    mock_settings.stale_cleanup.request_delay = 1.0
+    mock_load_settings.return_value = mock_settings
+    mock_clean_stale.return_value = StaleCleanupSummary()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "gitemployed-clean-stale",
+            "--settings",
+            str(settings_file),
+            "-w",
+            "5.0",
+            "--dry-run",
+        ],
+    )
+    monkeypatch.setenv("GITHUB_TOKEN", "fake_token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+    main()
+
+    mock_clean_stale.assert_called_once()
+    _, kwargs = mock_clean_stale.call_args
+    assert kwargs["request_delay"] == 5.0
+
+
+@patch("gitemployed.cli.clean_stale.clean_stale_issues")
+@patch("gitemployed.cli.clean_stale.load_settings")
+def test_cli_uses_settings_delay_when_no_cli_flag(
+    mock_load_settings: MagicMock,
+    mock_clean_stale: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    settings_file = tmp_path / "settings.yaml"
+    settings_file.write_text("dummy")
+
+    mock_settings = MagicMock()
+    mock_settings.stale_cleanup.enabled = True
+    mock_settings.stale_cleanup.request_delay = 4.2
+    mock_load_settings.return_value = mock_settings
+    mock_clean_stale.return_value = StaleCleanupSummary()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["gitemployed-clean-stale", "--settings", str(settings_file), "--dry-run"],
+    )
+    monkeypatch.setenv("GITHUB_TOKEN", "fake_token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+    main()
+
+    mock_clean_stale.assert_called_once()
+    _, kwargs = mock_clean_stale.call_args
+    assert kwargs["request_delay"] == 4.2
+
+
+@patch("gitemployed.cli.clean_stale.clean_stale_issues")
+@patch("gitemployed.cli.clean_stale.load_settings")
+def test_cli_short_flag_limit(
+    mock_load_settings: MagicMock,
+    mock_clean_stale: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    settings_file = tmp_path / "settings.yaml"
+    settings_file.write_text("dummy")
+
+    mock_settings = MagicMock()
+    mock_settings.stale_cleanup.enabled = True
+    mock_settings.stale_cleanup.limit = 10
+    mock_load_settings.return_value = mock_settings
+    mock_clean_stale.return_value = StaleCleanupSummary()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "gitemployed-clean-stale",
+            "--settings",
+            str(settings_file),
+            "-l",
+            "5",
+            "--dry-run",
+        ],
+    )
+    monkeypatch.setenv("GITHUB_TOKEN", "fake_token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+    main()
+
+    mock_clean_stale.assert_called_once()
+    _, kwargs = mock_clean_stale.call_args
+    assert kwargs["limit"] == 5

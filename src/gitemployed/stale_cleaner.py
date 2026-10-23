@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -150,6 +151,7 @@ def clean_stale_issues(
     include_bookmarked: bool = False,
     session: requests.Session | None = None,
     now: datetime.datetime | None = None,
+    request_delay: float = 0.0,
 ) -> StaleCleanupSummary:
     """Find and clean up stale, expired job search issues.
 
@@ -161,6 +163,7 @@ def clean_stale_issues(
         include_bookmarked: Whether to inspect 'want-to-apply' bookmarked roles.
         session: Optional injected requests.Session for URL inspection.
         now: Optional injected current datetime for testing.
+        request_delay: Delay in seconds between candidate liveness checks.
 
     Returns:
         StaleCleanupSummary object.
@@ -172,6 +175,7 @@ def clean_stale_issues(
 
     req_session = session or requests.Session()
     close_session = session is None
+    evaluated_url_count = 0
 
     try:
         for issue in candidates:
@@ -247,9 +251,29 @@ def clean_stale_issues(
                 )
                 continue
 
+            # Pacing delay between HTTP liveness checks to prevent rate limits
+            if evaluated_url_count > 0 and request_delay > 0:
+                time.sleep(request_delay)
+            evaluated_url_count += 1
+
             # Evaluate Liveness
             logger.info("Checking liveness for issue #%d: %s", num, apply_url)
-            liveness = check_job_liveness(apply_url, session=req_session)
+            try:
+                liveness = check_job_liveness(apply_url, session=req_session)
+            except Exception as le:
+                logger.error("Failed to evaluate liveness for issue #%d: %s", num, le)
+                summary.skipped_inconclusive_count += 1
+                summary.evaluations.append(
+                    StaleJobEvaluation(
+                        issue_number=num,
+                        title=title,
+                        apply_url=apply_url,
+                        liveness=None,
+                        action_taken="skipped_inconclusive",
+                        details=f"Unexpected error: {le}",
+                    )
+                )
+                continue
 
             if liveness.status == JobLivenessStatus.OPEN:
                 logger.info("Issue #%d is still open: %s", num, liveness.reason)

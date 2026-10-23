@@ -1237,6 +1237,7 @@ def test_settings_stale_cleanup_defaults() -> None:
     assert settings.stale_cleanup.days_inactive == 30
     assert settings.stale_cleanup.limit is None
     assert settings.stale_cleanup.include_bookmarked is False
+    assert settings.stale_cleanup.request_delay == 0.0
 
 
 def test_settings_with_stale_cleanup_parses() -> None:
@@ -1247,6 +1248,7 @@ def test_settings_with_stale_cleanup_parses() -> None:
                 "days_inactive": 14,
                 "limit": 50,
                 "include_bookmarked": True,
+                "request_delay": 2.0,
             }
         }
     )
@@ -1254,6 +1256,7 @@ def test_settings_with_stale_cleanup_parses() -> None:
     assert settings.stale_cleanup.days_inactive == 14
     assert settings.stale_cleanup.limit == 50
     assert settings.stale_cleanup.include_bookmarked is True
+    assert settings.stale_cleanup.request_delay == 2.0
 
 
 def test_settings_stale_cleanup_validation() -> None:
@@ -1272,3 +1275,22 @@ def test_settings_stale_cleanup_validation() -> None:
     msg_bool = "stale_cleanup.enabled must be a boolean"
     with pytest.raises(ValidationError, match=msg_bool):
         Settings.from_dict({"stale_cleanup": {"enabled": "yes"}})
+
+    msg_delay = "stale_cleanup.request_delay must be non-negative"
+    with pytest.raises(ValidationError, match=msg_delay):
+        Settings.from_dict({"stale_cleanup": {"request_delay": -1.0}})
+
+    msg_delay_type = "stale_cleanup.request_delay must be a number"
+    with pytest.raises(ValidationError, match=msg_delay_type):
+        Settings.from_dict({"stale_cleanup": {"request_delay": "fast"}})
+
+    with pytest.raises(ValidationError, match=msg_delay_type):
+        Settings.from_dict({"stale_cleanup": {"request_delay": True}})
+
+    # Explicit None falls back to default 0.0
+    s = Settings.from_dict({"stale_cleanup": {"request_delay": None}})
+    assert s.stale_cleanup.request_delay == 0.0
+
+    # Explicit None falls back to default None
+    s_limit = Settings.from_dict({"stale_cleanup": {"limit": None}})
+    assert s_limit.stale_cleanup.limit is None

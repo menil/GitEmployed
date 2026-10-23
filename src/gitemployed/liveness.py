@@ -11,6 +11,8 @@ import enum
 import json
 import logging
 import re
+import time
+import urllib.error
 import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
@@ -70,8 +72,8 @@ CLOSED_PHRASES: tuple[str, ...] = (
     "this vacancy has expired",
 )
 
-# Regex to detect LinkedIn job view paths vs search/index paths
-LINKEDIN_VIEW_RE = re.compile(r"/jobs/view/\d+", re.IGNORECASE)
+# Regex to detect LinkedIn job view paths (including slugged URLs) vs search/index paths
+LINKEDIN_VIEW_RE = re.compile(r"^/jobs/view/(?:[^/?#]*-)?\d+", re.IGNORECASE)
 
 _ATS_HOSTS: tuple[str, ...] = (
     "greenhouse.io",
@@ -81,6 +83,21 @@ _ATS_HOSTS: tuple[str, ...] = (
 )
 
 _CLOSED_BADGE_CLASSES: tuple[str, ...] = ("closed-job", "no-longer-accepting")
+
+AUTH_WALL_PATHS: tuple[str, ...] = (
+    "/authwall",
+    "/login",
+    "/checkpoint",
+    "/uas/login",
+)
+
+
+def _is_auth_wall_path(path: str) -> bool:
+    """Check whether a URL path represents a login wall or checkpoint."""
+    clean_path = path.lower().rstrip("/")
+    return any(
+        clean_path == p or clean_path.startswith(f"{p}/") for p in AUTH_WALL_PATHS
+    )
 
 
 def _is_linkedin_host(host: str) -> bool:
@@ -118,21 +135,36 @@ def is_redirect_to_search_or_index(original_url: str, final_url: str) -> bool:
     orig_parsed = urllib.parse.urlsplit(original_url)
     final_parsed = urllib.parse.urlsplit(final_url)
 
-    orig_host = orig_parsed.netloc.lower().removeprefix("www.")
     final_host = final_parsed.netloc.lower().removeprefix("www.")
 
+    # Do not treat authwalls/login challenges as search/index redirects
+    if _is_auth_wall_path(final_parsed.path):
+        return False
+
+    # 1. Any LinkedIn redirect carrying LinkedIn's explicit expired JD tracking marker
     if (
-        (_is_linkedin_host(orig_host) or _is_linkedin_host(final_host))
-        and LINKEDIN_VIEW_RE.search(orig_parsed.path)
-        and not LINKEDIN_VIEW_RE.search(final_parsed.path)
-        and (
-            "/jobs/search" in final_parsed.path
-            or final_parsed.path.rstrip("/") in ("/jobs", "")
-        )
+        _is_linkedin_host(final_host)
+        and "expired_jd_redirect" in final_parsed.query.lower()
     ):
         return True
 
-    # Common ATS redirects when job is removed (e.g. Greenhouse, Lever, Ashby)
+    # 2. LinkedIn job view redirect away to a non-view LinkedIn page
+    # (e.g. directory/search)
+    if (
+        _is_linkedin_host(final_host)
+        and LINKEDIN_VIEW_RE.search(orig_parsed.path)
+        and not LINKEDIN_VIEW_RE.search(final_parsed.path)
+    ):
+        return True
+
+    # 3. Any redirect ending up on a generic LinkedIn search or landing page
+    if _is_linkedin_host(final_host) and (
+        "/jobs/search" in final_parsed.path
+        or final_parsed.path.rstrip("/") in ("/jobs", "")
+    ):
+        return True
+
+    # 4. Common ATS redirects when job is removed (e.g. Greenhouse, Lever, Ashby)
     if _is_ats_host(final_host):
         orig_segments = [s for s in orig_parsed.path.strip("/").split("/") if s]
         final_segments = [s for s in final_parsed.path.strip("/").split("/") if s]
@@ -249,6 +281,8 @@ def check_job_liveness(
     session: requests.Session | None = None,
     timeout: float = 12.0,
     headers: dict[str, str] | None = None,
+    max_retries_on_rate_limit: int = 1,
+    retry_delay: float = 2.0,
 ) -> LivenessResult:
     """Inspect a job posting URL and determine its availability status.
 
@@ -257,6 +291,8 @@ def check_job_liveness(
         session: Optional injected requests.Session for connection reuse/mocking.
         timeout: Network timeout in seconds.
         headers: Optional custom HTTP headers.
+        max_retries_on_rate_limit: Retries to attempt if HTTP 429 is encountered.
+        retry_delay: Delay in seconds before retrying on HTTP 429.
 
     Returns:
         LivenessResult with status (OPEN, CLOSED, INCONCLUSIVE) and explanation.
@@ -280,6 +316,16 @@ def check_job_liveness(
             allow_redirects=True,
         )
 
+        # Check if redirected to authwall or login page
+        resp_url = resp.url or clean_url
+        final_parsed = urllib.parse.urlsplit(resp_url)
+        if _is_auth_wall_path(final_parsed.path):
+            return LivenessResult(
+                status=JobLivenessStatus.INCONCLUSIVE,
+                reason="Redirected to login or authentication wall",
+                http_status=resp.status_code,
+            )
+
         # HTTP status code inspection
         if resp.status_code in (404, 410):
             status_desc = "Not Found" if resp.status_code == 404 else "Gone"
@@ -291,6 +337,21 @@ def check_job_liveness(
             )
 
         if resp.status_code in (403, 429):
+            if resp.status_code == 429 and max_retries_on_rate_limit > 0:
+                logger.warning(
+                    "HTTP 429 Rate Limited on %s. Retrying in %.1fs...",
+                    clean_url,
+                    retry_delay,
+                )
+                time.sleep(retry_delay)
+                return check_job_liveness(
+                    clean_url,
+                    session=req_session,
+                    timeout=timeout,
+                    headers=req_headers,
+                    max_retries_on_rate_limit=max_retries_on_rate_limit - 1,
+                    retry_delay=retry_delay * 1.5,
+                )
             return LivenessResult(
                 status=JobLivenessStatus.INCONCLUSIVE,
                 reason=f"HTTP {resp.status_code} (Rate limited or access denied)",
@@ -312,7 +373,7 @@ def check_job_liveness(
             )
 
         # Evaluate HTTP 200 content
-        res = evaluate_page_content(resp.text, clean_url, resp.url)
+        res = evaluate_page_content(resp.text, clean_url, resp_url)
         res.http_status = 200
         return res
 
@@ -326,6 +387,12 @@ def check_job_liveness(
         return LivenessResult(
             status=JobLivenessStatus.INCONCLUSIVE,
             reason=f"Request error: {e}",
+        )
+    except (ValueError, urllib.error.URLError) as e:
+        logger.warning("Error checking liveness for %s: %s", clean_url, e)
+        return LivenessResult(
+            status=JobLivenessStatus.INCONCLUSIVE,
+            reason=f"Processing error: {e}",
         )
     finally:
         if close_session:
