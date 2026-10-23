@@ -61,6 +61,16 @@ def main() -> None:
         action="store_true",
         help="Include issues tagged with 'want-to-apply'.",
     )
+    parser.add_argument(
+        "--delay",
+        "-w",
+        type=float,
+        default=None,
+        help=(
+            "Delay in seconds between liveness checks "
+            "(overrides settings, default 0.0)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -96,6 +106,9 @@ def main() -> None:
         if args.include_bookmarked
         else (cfg.include_bookmarked if cfg else False)
     )
+    request_delay = (
+        args.delay if args.delay is not None else (cfg.request_delay if cfg else 0.0)
+    )
 
     # 2. Resolve GitHub credentials
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_PAT")
@@ -128,6 +141,7 @@ def main() -> None:
             dry_run=is_dry,
             limit=limit,
             include_bookmarked=include_bookmarked,
+            request_delay=request_delay,
         )
         logger.info(
             "Summary: %d inspected, %d closed, %d active, %d inconclusive",

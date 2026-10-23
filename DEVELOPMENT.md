@@ -67,6 +67,7 @@ Before scraping new listings each day, `scrape-jobs.yml` runs `gitemployed-clean
 
 - **Liveness Inspection:** Checks the posting's `Apply URL` for HTTP `404`/`410`, career search redirects, and explicit closure badges (*"No longer accepting applications"*, *"Position has been filled"*).
 - **Safety Guards:** Rate-limiting responses (`HTTP 429`), bot challenges (`Cloudflare`), and authentication walls are treated as inconclusive and never cause false-positive closures. Issues tagged `want-to-apply` or containing comments from the user are preserved.
+- **Batch Pacing & Limits:** Checks all qualifying stale roles by default. Optional batch caps (`stale_cleanup.limit` or `--limit`) and inter-request pacing (`stale_cleanup.request_delay` or `--delay`) can be configured to manage large backlogs.
 - **Closure:** Roles confirmed closed are transitioned to `Mismatched/Closed` with the `expired` label, updated on Projects V2, and closed with an explanatory comment.
 - **Manual Sweep:** You can manually run a sweep locally or via CLI:
   ```bash

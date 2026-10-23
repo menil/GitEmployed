@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 from unittest.mock import MagicMock
 
+import pytest
 import requests
 
 from gitemployed.liveness import (
@@ -25,14 +26,14 @@ def test_invalid_urls_return_inconclusive() -> None:
 def test_http_404_and_410_detected_as_closed() -> None:
     session = MagicMock(spec=requests.Session)
 
-    resp_404 = MagicMock(status_code=404)
+    resp_404 = MagicMock(status_code=404, url="https://example.com/job/1")
     session.get.return_value = resp_404
     res = check_job_liveness("https://example.com/job/1", session=session)
     assert res.status == JobLivenessStatus.CLOSED
     assert res.http_status == 404
     assert "404" in res.reason
 
-    resp_410 = MagicMock(status_code=410)
+    resp_410 = MagicMock(status_code=410, url="https://example.com/job/2")
     session.get.return_value = resp_410
     res = check_job_liveness("https://example.com/job/2", session=session)
     assert res.status == JobLivenessStatus.CLOSED
@@ -44,9 +45,11 @@ def test_http_429_and_403_return_inconclusive() -> None:
     session = MagicMock(spec=requests.Session)
 
     for code in (429, 403, 500, 503, 301):
-        resp = MagicMock(status_code=code)
+        resp = MagicMock(status_code=code, url="https://example.com/job")
         session.get.return_value = resp
-        res = check_job_liveness("https://example.com/job", session=session)
+        res = check_job_liveness(
+            "https://example.com/job", session=session, max_retries_on_rate_limit=0
+        )
         assert res.status == JobLivenessStatus.INCONCLUSIVE
         assert res.http_status == code
 
@@ -214,15 +217,48 @@ def test_redirect_to_search_or_index() -> None:
         "https://www.linkedin.com/jobs/view/12345",
         "https://www.linkedin.com/jobs/",
     )
+    # LinkedIn expired JD redirect parameter
+    assert is_redirect_to_search_or_index(
+        "https://www.linkedin.com/jobs/view/4461786754",
+        "https://www.linkedin.com/jobs/senior-software-engineer-contract-jobs?trk=expired_jd_redirect",
+    )
+    # LinkedIn redirect to category / directory page away from job view
+    assert is_redirect_to_search_or_index(
+        "https://www.linkedin.com/jobs/view/4461744897",
+        "https://www.linkedin.com/jobs/j2ee-developer-jobs",
+    )
     # LinkedIn redirect from non-LinkedIn domain ending up on LinkedIn search
     assert is_redirect_to_search_or_index(
         "https://custom-domain.com/jobs/view/12345",
         "https://www.linkedin.com/jobs/search?keywords=test",
     )
-    # LinkedIn normal job view is not a search redirect
+    # LinkedIn normal job view is not a search redirect (including slugged URLs)
     assert not is_redirect_to_search_or_index(
         "https://www.linkedin.com/jobs/view/12345",
         "https://www.linkedin.com/jobs/view/12345",
+    )
+    assert not is_redirect_to_search_or_index(
+        "https://www.linkedin.com/jobs/view/12345",
+        "https://www.linkedin.com/jobs/view/senior-software-architect-12345",
+    )
+    assert not is_redirect_to_search_or_index(
+        "https://www.linkedin.com/jobs/view/12345",
+        "https://www.linkedin.com/jobs/view/12345?refId=abc",
+    )
+    # LinkedIn redirecting to external ATS is not a search redirect
+    assert not is_redirect_to_search_or_index(
+        "https://www.linkedin.com/jobs/view/12345",
+        "https://boards.greenhouse.io/acme/jobs/12345",
+    )
+    # Generic aggregator landing on LinkedIn /jobs
+    assert is_redirect_to_search_or_index(
+        "https://aggregator.com/apply/123",
+        "https://www.linkedin.com/jobs",
+    )
+    # LinkedIn authwall is not a search redirect
+    assert not is_redirect_to_search_or_index(
+        "https://www.linkedin.com/jobs/view/12345",
+        "https://www.linkedin.com/authwall?trk=rip",
     )
 
     # ATS redirects where original URL has more path segments than final URL
@@ -271,3 +307,91 @@ def test_check_job_liveness_e2e_mocked() -> None:
     assert res.status == JobLivenessStatus.CLOSED
     assert res.http_status == 200
     assert len(res.signals) > 0
+
+
+def test_check_job_liveness_authwall_redirect() -> None:
+    session = MagicMock(spec=requests.Session)
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.url = "https://www.linkedin.com/authwall?trk=rip"
+    resp.text = "<html><body>Please sign in</body></html>"
+    session.get.return_value = resp
+
+    res = check_job_liveness(
+        "https://www.linkedin.com/jobs/view/12345", session=session
+    )
+    assert res.status == JobLivenessStatus.INCONCLUSIVE
+    assert "login or authentication wall" in res.reason
+
+
+def test_check_job_liveness_expired_jd_redirect() -> None:
+    session = MagicMock(spec=requests.Session)
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.url = "https://www.linkedin.com/jobs/senior-software-engineer-contract-jobs?trk=expired_jd_redirect"
+    resp.text = "<html><body><h1>11,000+ Open Roles</h1></body></html>"
+    session.get.return_value = resp
+
+    res = check_job_liveness(
+        "https://www.linkedin.com/jobs/view/4461786754", session=session
+    )
+    assert res.status == JobLivenessStatus.CLOSED
+    assert "Redirected from job view" in res.reason
+
+
+def test_check_job_liveness_rate_limit_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    session = MagicMock(spec=requests.Session)
+
+    resp_429 = MagicMock()
+    resp_429.status_code = 429
+    resp_429.url = "https://www.linkedin.com/jobs/view/12345"
+
+    resp_200 = MagicMock()
+    resp_200.status_code = 200
+    resp_200.url = "https://www.linkedin.com/jobs/view/12345"
+    resp_200.text = "<html><body><h1>Software Engineer</h1></body></html>"
+
+    session.get.side_effect = [resp_429, resp_200]
+
+    res = check_job_liveness(
+        "https://www.linkedin.com/jobs/view/12345",
+        session=session,
+        max_retries_on_rate_limit=1,
+        retry_delay=0.01,
+    )
+    assert res.status == JobLivenessStatus.OPEN
+    assert session.get.call_count == 2
+
+
+def test_check_job_liveness_rate_limit_retry_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    session = MagicMock(spec=requests.Session)
+
+    resp_429 = MagicMock()
+    resp_429.status_code = 429
+    resp_429.url = "https://www.linkedin.com/jobs/view/12345"
+    session.get.return_value = resp_429
+
+    res = check_job_liveness(
+        "https://www.linkedin.com/jobs/view/12345",
+        session=session,
+        max_retries_on_rate_limit=1,
+        retry_delay=0.01,
+    )
+    assert res.status == JobLivenessStatus.INCONCLUSIVE
+    assert "429" in res.reason
+    assert session.get.call_count == 2
+
+
+def test_check_job_liveness_processing_exception() -> None:
+    session = MagicMock(spec=requests.Session)
+    session.get.side_effect = ValueError("Broken parser")
+
+    res = check_job_liveness(
+        "https://www.linkedin.com/jobs/view/12345", session=session
+    )
+    assert res.status == JobLivenessStatus.INCONCLUSIVE
+    assert "Processing error" in res.reason

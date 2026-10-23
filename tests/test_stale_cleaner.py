@@ -178,12 +178,36 @@ def test_clean_stale_issues_skips_active_and_inconclusive(
         LivenessResult(status=JobLivenessStatus.INCONCLUSIVE, reason="HTTP 429"),
     ]
 
-    summary = clean_stale_issues(client, days_inactive=30)
+    summary = clean_stale_issues(client, days_inactive=30, request_delay=0.0)
     assert summary.inspected_count == 2
     assert summary.skipped_active_count == 1
     assert summary.skipped_inconclusive_count == 1
     assert summary.closed_count == 0
     client.close_issue.assert_not_called()
+
+
+@patch("gitemployed.stale_cleaner.check_job_liveness")
+def test_clean_stale_issues_liveness_exception_handled_gracefully(
+    mock_liveness: MagicMock,
+) -> None:
+    client = MagicMock(spec=GitHubClient)
+    client.repo = "owner/repo"
+    client.search_issues.return_value = [
+        {
+            "number": 25,
+            "title": "Exception Role",
+            "labels": [{"name": "ready-to-apply"}],
+            "body": "- **Apply URL:** https://example.com/job/25",
+        }
+    ]
+    client.list_comments.return_value = []
+    mock_liveness.side_effect = RuntimeError("Parser crashed")
+
+    summary = clean_stale_issues(client, days_inactive=30, request_delay=0.0)
+    assert summary.inspected_count == 1
+    assert summary.skipped_inconclusive_count == 1
+    assert summary.closed_count == 0
+    assert summary.evaluations[0].action_taken == "skipped_inconclusive"
 
 
 @patch("gitemployed.stale_cleaner.check_job_liveness")
@@ -244,3 +268,36 @@ def test_clean_stale_issues_executes_closure(mock_liveness: MagicMock) -> None:
         "I_kwDOULLkss40", "Mismatched/Closed"
     )
     client.close_issue.assert_called_with(40)
+
+
+@patch("gitemployed.stale_cleaner.time.sleep")
+@patch("gitemployed.stale_cleaner.check_job_liveness")
+def test_clean_stale_issues_paces_requests(
+    mock_liveness: MagicMock, mock_sleep: MagicMock
+) -> None:
+    client = MagicMock(spec=GitHubClient)
+    client.repo = "owner/repo"
+    client.search_issues.return_value = [
+        {
+            "number": 1,
+            "title": "Job 1",
+            "body": "- **Apply URL:** https://example.com/job/1",
+            "labels": [{"name": "ready-to-apply"}],
+        },
+        {
+            "number": 2,
+            "title": "Job 2",
+            "body": "- **Apply URL:** https://example.com/job/2",
+            "labels": [{"name": "ready-to-apply"}],
+        },
+    ]
+    client.list_comments.return_value = []
+    mock_liveness.return_value = LivenessResult(
+        status=JobLivenessStatus.OPEN, reason="Active"
+    )
+
+    summary = clean_stale_issues(
+        client, days_inactive=30, request_delay=2.5, dry_run=True
+    )
+    assert summary.inspected_count == 2
+    mock_sleep.assert_called_once_with(2.5)

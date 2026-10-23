@@ -435,6 +435,7 @@ class StaleCleanupConfig(BaseModel):
     days_inactive: int = 30
     limit: int | None = None
     include_bookmarked: bool = False
+    request_delay: float = 0.0
 
     @field_validator("enabled", "include_bookmarked", mode="before")
     @classmethod
@@ -468,6 +469,17 @@ class StaleCleanupConfig(BaseModel):
         if v < 1:
             raise ValidationError("stale_cleanup.limit must be at least 1.")
         return v
+
+    @field_validator("request_delay", mode="before")
+    @classmethod
+    def _validate_request_delay(cls, v: Any) -> float:
+        if v is None:
+            return 0.0
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValidationError("stale_cleanup.request_delay must be a number.")
+        if v < 0:
+            raise ValidationError("stale_cleanup.request_delay must be non-negative.")
+        return float(v)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> StaleCleanupConfig:
