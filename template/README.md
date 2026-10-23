@@ -81,7 +81,7 @@ Configure these under the **Variables** tab:
 
 | Workflow | What it does |
 | --- | --- |
-| `scrape-jobs.yml` | Daily cron that discovers new roles from LinkedIn, Indeed, and ZipRecruiter, then opens issues |
+| `scrape-jobs.yml` | Daily cron that sweeps expired inactive roles, discovers new roles from LinkedIn, Indeed, and ZipRecruiter, and opens issues |
 | `triage-issue.yml` | AI-scores each listing against your resume and tailors a fit resume if it passes the threshold |
 | `respond-issue.yml` | Answers questions on issue threads via live web research, and applies status labels from conversation |
 | `status-transition.yml` | Moves your board card when you apply a lifecycle label (`applied`, `in-loop`, ...), and closes the issue for terminal labels (`rejected`, `triage-mismatched`) while keeping their columns distinct |
