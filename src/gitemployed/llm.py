@@ -1128,6 +1128,33 @@ def _response_to_chat_message(response: Any) -> ChatMessage:
     return ChatMessage(role="assistant", content=content, tool_calls=tool_calls or None)
 
 
+_QUOTA_ERROR_MARKERS = (
+    "resource_exhausted",
+    "insufficient_quota",
+    "credits are depleted",
+    "insufficient credits",
+    "credit balance is too low",
+)
+
+
+def _is_quota_exceeded_error(exc: Exception) -> bool:
+    """Return True when an exception indicates quota, rate-limit, or credit
+    exhaustion."""
+    if isinstance(
+        exc,
+        (
+            litellm.exceptions.RateLimitError,
+            litellm.exceptions.BudgetExceededError,
+            litellm.exceptions.ContextWindowExceededError,
+        ),
+    ):
+        return True
+    if getattr(exc, "status_code", None) in (402, 429):
+        return True
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _QUOTA_ERROR_MARKERS)
+
+
 class LiteLLMClient(LLMClient):
     """Unified LLM client implementation wrapping litellm.completion."""
 
@@ -1208,14 +1235,12 @@ class LiteLLMClient(LLMClient):
 
         try:
             return litellm.completion(**kwargs)
-        except (
-            litellm.exceptions.RateLimitError,
-            litellm.exceptions.BudgetExceededError,
-            litellm.exceptions.ContextWindowExceededError,
-        ) as e:
-            raise QuotaExceededError(f"LLM API quota exceeded: {e}") from e
         except Exception as e:
-            if isinstance(e, (QuotaExceededError, ValidationError)):
+            if isinstance(e, QuotaExceededError):
+                raise
+            if _is_quota_exceeded_error(e):
+                raise QuotaExceededError(f"LLM API quota exceeded: {e}") from e
+            if isinstance(e, ValidationError):
                 raise
             raise ValidationError(f"LLM request failed: {e}") from e
 

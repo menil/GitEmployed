@@ -734,8 +734,6 @@ def run_sync(
     )
     processed = cursor["processed"]
     batch_ids = _select_batch(all_message_ids, processed)
-    unprocessed_total = sum(1 for mid in all_message_ids if mid not in processed)
-    caught_up = unprocessed_total <= MAX_MESSAGES_PER_RUN
 
     candidate_pool = get_candidate_pool(gh_client)
     for message_id in batch_ids:
@@ -751,14 +749,28 @@ def run_sync(
             processed=processed,
         )
 
-    cursor["processed"] = _prune_processed(processed, gmail_config.days_back, now)
+    batch_had_failures = any(mid not in processed for mid in batch_ids)
+    if batch_ids and not any(mid in processed for mid in batch_ids):
+        logger.warning(
+            "All %d message(s) in this batch failed processing; "
+            "skipping cursor advancement.",
+            len(batch_ids),
+        )
+        return
+
+    caught_up = not batch_had_failures and all(
+        mid in processed for mid in all_message_ids
+    )
+    if not batch_had_failures:
+        cursor["processed"] = _prune_processed(processed, gmail_config.days_back, now)
     if caught_up:
         cursor["last_synced_at"] = _format_iso(now)
-    # else: a backlog bigger than MAX_MESSAGES_PER_RUN means this run did not
-    # actually reach "now" -- leaving the previous last_synced_at in place
-    # keeps _check_staleness's warning firing on every run until the
-    # backlog clears, instead of the cap silently resetting the clock on a
-    # gap that hasn't actually closed (spec §5.2 step 2/§13.8).
+    # else: a backlog bigger than MAX_MESSAGES_PER_RUN or any per-message
+    # failure means this run did not actually reach "now" -- leaving the
+    # previous last_synced_at in place keeps _check_staleness's warning
+    # firing on every run until the backlog clears, instead of silently
+    # resetting the clock on a gap that hasn't actually closed (spec §5.2
+    # step 2/§13.8).
 
     _finalize_cursor(repo_path, cursor)
 
