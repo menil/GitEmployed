@@ -1908,3 +1908,42 @@ def test_match_email_to_candidate_rejects_number_outside_call_candidates() -> No
 
     assert result.issue_number is None
     assert result.status == "rejected"
+
+
+@patch("litellm.completion")
+def test_gemini_client_402_prepayment_credits_depleted_raises_quota_exceeded(
+    mock_completion: MagicMock,
+) -> None:
+    """Verify HTTP 402 BadRequestError for depleted prepayment credits raises
+    QuotaExceededError rather than ValidationError."""
+    mock_completion.side_effect = litellm.exceptions.BadRequestError(
+        message=(
+            'GeminiException - {\n  "error": {\n    "code": 402,\n'
+            '    "message": "Your prepayment credits are depleted.",\n'
+            '    "status": "RESOURCE_EXHAUSTED"\n  }\n}'
+        ),
+        model="gemini-2.5-flash",
+        llm_provider="gemini",
+    )
+
+    client = GeminiClient(api_key="key")
+    with pytest.raises(QuotaExceededError, match="LLM API quota exceeded"):
+        client.chat([ChatMessage(role="user", content="hello")])
+
+
+@patch("litellm.completion")
+def test_llm_client_status_code_402_raises_quota_exceeded(
+    mock_completion: MagicMock,
+) -> None:
+    """Verify an APIError with status_code=402 (Payment Required) raises
+    QuotaExceededError even without provider-specific message markers."""
+    mock_completion.side_effect = litellm.exceptions.APIError(
+        status_code=402,
+        message="Payment Required",
+        llm_provider="openrouter",
+        model="openrouter/free",
+    )
+
+    client = OpenRouterClient(api_key="key")
+    with pytest.raises(QuotaExceededError, match="LLM API quota exceeded"):
+        client.chat([ChatMessage(role="user", content="hello")])

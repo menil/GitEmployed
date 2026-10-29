@@ -1132,6 +1132,113 @@ def test_run_sync_advances_last_synced_at_when_caught_up(tmp_path: Path) -> None
     assert cursor["last_synced_at"]
 
 
+def test_run_sync_does_not_advance_cursor_when_all_messages_fail(
+    tmp_path: Path,
+) -> None:
+    """When every message in the batch fails processing (e.g. LLM validation
+    error), run_sync must not advance last_synced_at, prune processed entries,
+    or commit/push the cursor."""
+    import json as _json
+
+    msg_ids = ["m0", "m1"]
+    messages = {mid: make_message(message_id=mid, authentic=True) for mid in msg_ids}
+    gmail_client = FakeGmailClient(message_ids=msg_ids, messages=messages)
+    gh = FakeGmailGitHubClient()
+
+    old_date = gmail_sync._format_iso(_FIXED_TEST_NOW - timedelta(days=10))
+    existing_cursor = _json.dumps(
+        {
+            "processed": {"old-msg": old_date},
+            "last_synced_at": "2026-09-18T12:00:00Z",
+        }
+    )
+
+    def fake_run_git(args: list[str], cwd: Path) -> str:
+        if args[0] == "show":
+            return existing_cursor
+        return ""
+
+    with (
+        patch("gitemployed.cli.gmail_sync.run_git", side_effect=fake_run_git),
+        patch("gitemployed.cli.gmail_sync.get_candidate_pool", return_value=[]),
+        patch(
+            "gitemployed.cli.gmail_sync.match_email_to_candidate",
+            side_effect=ValidationError("LLM request failed"),
+        ),
+        patch("gitemployed.cli.gmail_sync._finalize_cursor") as mock_finalize,
+    ):
+        gmail_sync.run_sync(
+            repo_path=tmp_path,
+            gmail_config=GmailConfig(enabled=True, label="GitEmployed", days_back=7),
+            gh_client=gh,
+            gmail_client=gmail_client,
+            llm_client=MagicMock(),
+            settings=sample_settings(),
+            resume=sample_resume(),
+            now=_FIXED_TEST_NOW,
+        )
+
+    mock_finalize.assert_not_called()
+
+
+def test_run_sync_holds_back_last_synced_at_when_some_messages_fail(
+    tmp_path: Path,
+) -> None:
+    """When some messages in the batch fail processing while others succeed,
+    run_sync must not advance last_synced_at or prune old entries."""
+    import json as _json
+
+    messages = {
+        "m-unauth": make_message(message_id="m-unauth", authentic=False),
+        "m-auth": make_message(message_id="m-auth", authentic=True),
+    }
+    gmail_client = FakeGmailClient(
+        message_ids=["m-auth", "m-unauth"], messages=messages
+    )
+    gh = FakeGmailGitHubClient()
+
+    old_date = gmail_sync._format_iso(_FIXED_TEST_NOW - timedelta(days=10))
+    prev_synced = "2026-09-18T12:00:00Z"
+    existing_cursor = _json.dumps(
+        {
+            "processed": {"old-msg": old_date},
+            "last_synced_at": prev_synced,
+        }
+    )
+
+    def fake_run_git(args: list[str], cwd: Path) -> str:
+        if args[0] == "show":
+            return existing_cursor
+        return ""
+
+    with (
+        patch("gitemployed.cli.gmail_sync.run_git", side_effect=fake_run_git),
+        patch("gitemployed.cli.gmail_sync.get_candidate_pool", return_value=[]),
+        patch(
+            "gitemployed.cli.gmail_sync.match_email_to_candidate",
+            side_effect=ValidationError("LLM request failed"),
+        ),
+        patch("gitemployed.cli.gmail_sync._finalize_cursor") as mock_finalize,
+    ):
+        gmail_sync.run_sync(
+            repo_path=tmp_path,
+            gmail_config=GmailConfig(enabled=True, label="GitEmployed", days_back=7),
+            gh_client=gh,
+            gmail_client=gmail_client,
+            llm_client=MagicMock(),
+            settings=sample_settings(),
+            resume=sample_resume(),
+            now=_FIXED_TEST_NOW,
+        )
+
+    mock_finalize.assert_called_once()
+    _, written_cursor = mock_finalize.call_args.args
+    assert written_cursor["last_synced_at"] == prev_synced
+    assert "m-unauth" in written_cursor["processed"]
+    assert "m-auth" not in written_cursor["processed"]
+    assert "old-msg" in written_cursor["processed"]
+
+
 def test_run_sync_resolves_label_and_lists_messages_with_configured_params(
     tmp_path: Path,
 ) -> None:
