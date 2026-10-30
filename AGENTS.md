@@ -36,7 +36,7 @@ Within the Nix shell environment, you can run tests directly via `pytest` for ta
 
 ## Python Schema & Parsing Conventions
 
-- **Gemini SDK Model Prefixing**: When using the `google-generativeai` SDK, always use the fully qualified model name with the `models/` prefix (e.g., `models/gemini-2.0-flash` or `models/gemini-2.5-flash`) to prevent format errors on new models not recognized as shorthands by older SDK versions.
+- **Gemini LiteLLM Model Prefixing**: Gemini requests go through `litellm` (the deprecated `google-generativeai` SDK is not used). LiteLLM expects `gemini/<bare-model>` without a `models/` segment because it interpolates the model name after `/v1beta/models/`. User-facing configuration (`GEMINI_MODEL`, `research.model`) accepts bare `gemini-*`, `gemini/gemini-*`, or legacy `models/gemini-*` names, which `LiteLLMClient._resolve_litellm_model` normalizes to `gemini/<bare-model>`.
 - **Parse, Don't Validate**: When implementing loaders and data models (e.g., for YAML/JSON Resume data), follow the "parse, don't validate" pattern (see [Alexis King's design post](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/) for details):
   - Avoid writing hand-crafted type checks and validation raises for basic scalar attributes.
   - Coerce inputs safely to their target types (such as converting scalars to strings and explicit `.isoformat()` serialization for `datetime.date`/`datetime.datetime` objects).

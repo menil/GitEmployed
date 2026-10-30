@@ -1155,6 +1155,18 @@ def _is_quota_exceeded_error(exc: Exception) -> bool:
     return any(marker in msg for marker in _QUOTA_ERROR_MARKERS)
 
 
+def _strip_gemini_prefix(model_name: str) -> str:
+    """Strip LiteLLM ``gemini/`` and legacy SDK ``models/`` prefixes."""
+    return model_name.removeprefix("gemini/").removeprefix("models/")
+
+
+def _is_valid_model_slug(clean_name: str, prefix: str) -> bool:
+    """Return True when ``clean_name`` is ``<prefix><slug>`` with no slashes."""
+    return (
+        clean_name.startswith(prefix) and clean_name != prefix and "/" not in clean_name
+    )
+
+
 class LiteLLMClient(LLMClient):
     """Unified LLM client implementation wrapping litellm.completion."""
 
@@ -1171,25 +1183,51 @@ class LiteLLMClient(LLMClient):
 
     @staticmethod
     def _resolve_litellm_model(model_name: str, provider: str | None = None) -> str:
-        """Resolve model name into litellm provider/model format."""
-        provider_lower = (provider or "").lower()
-        if (
-            provider_lower == "gemini"
-            or model_name.startswith("models/")
-            or model_name.startswith("gemini-")
-        ):
-            if not model_name.startswith("gemini/"):
-                return f"gemini/{model_name}"
-            return model_name
+        """Resolve and validate model name into litellm ``provider/model`` format."""
+        model_name = model_name.strip()
+        provider_lower = (provider or "").strip().lower()
+
+        # Explicit provider always wins over model-name prefix heuristics and
+        # validates provider-specific slug shapes as the single source of truth.
+        if provider_lower == "gemini":
+            # LiteLLM interpolates the model name after `/v1beta/models/`, so a
+            # legacy `models/` prefix produces `/v1beta/models/models/...` (404).
+            clean_name = _strip_gemini_prefix(model_name)
+            if not _is_valid_model_slug(clean_name, "gemini-"):
+                raise ValidationError(
+                    f"Invalid model name: '{model_name}'. "
+                    "Gemini model names must be 'gemini-<model>' (optionally prefixed "
+                    "with 'models/' or 'gemini/', e.g., 'gemini-2.5-flash')."
+                )
+            return f"gemini/{clean_name}"
         if provider_lower == "openrouter":
+            if "/" not in model_name:
+                raise ValidationError(
+                    f"Invalid model name: '{model_name}'. "
+                    "OpenRouter model names must specify a provider prefix "
+                    "(e.g., 'google/gemini-2.5-flash' or 'anthropic/claude-sonnet-5')."
+                )
             return f"openrouter/{model_name}"
-        if provider_lower in ("claude", "anthropic") or model_name.startswith(
-            "claude-"
-        ):
-            if not (model_name.startswith("anthropic/") or "/" in model_name):
-                return f"anthropic/{model_name}"
-            return model_name
-        if "/" in model_name and not model_name.startswith("gemini/"):
+        if provider_lower in ("claude", "anthropic"):
+            clean_name = model_name.removeprefix("anthropic/")
+            if not _is_valid_model_slug(clean_name, "claude-"):
+                raise ValidationError(
+                    f"Invalid model name: '{model_name}'. "
+                    "Claude model names must start with 'claude-' "
+                    "(e.g., 'claude-sonnet-5')."
+                )
+            return f"anthropic/{clean_name}"
+
+        # Fallback prefix inference when no explicit provider was passed.
+        if model_name.startswith(("models/gemini-", "gemini-", "gemini/")):
+            return f"gemini/{_strip_gemini_prefix(model_name)}"
+        if model_name.startswith(("claude-", "anthropic/")):
+            clean_name = model_name.removeprefix("anthropic/")
+            return f"anthropic/{clean_name}"
+        # Among supported providers (Gemini, Claude, OpenRouter), any remaining
+        # `vendor/model` slug is treated as an OpenRouter route; add explicit
+        # prefix branches above if new slash-prefixed providers are introduced.
+        if "/" in model_name:
             return f"openrouter/{model_name}"
         return model_name
 
@@ -1214,8 +1252,12 @@ class LiteLLMClient(LLMClient):
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        # Special handling for Claude OAuth tokens
-        if self.api_key and self.api_key.startswith("sk-ant-oat"):
+        # Special handling for Claude OAuth tokens (restricted to Anthropic target)
+        if (
+            self.api_key
+            and self.api_key.startswith("sk-ant-oat")
+            and self.litellm_model.startswith("anthropic/")
+        ):
             kwargs["extra_headers"] = {
                 "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
                 "Authorization": f"Bearer {self.api_key}",
@@ -1342,10 +1384,14 @@ _DEFAULT_CLAUDE_MODEL = "claude-sonnet-5"
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 
 
+def _get_env_str(env_var: str) -> str:
+    """Retrieve a stripped environment variable value, or empty string if unset."""
+    return (os.environ.get(env_var) or "").strip()
+
+
 def _get_model_name(env_var: str, default_val: str) -> str:
     """Retrieve and clean a model name from environment variables."""
-    val = os.environ.get(env_var)
-    return default_val if not val else val.strip()
+    return _get_env_str(env_var) or default_val
 
 
 def get_llm_client(model: str | None = None) -> LLMClient:
@@ -1364,19 +1410,19 @@ def get_llm_client(model: str | None = None) -> LLMClient:
         ValidationError: When no provider/credential is configured, the
             provider name is unknown, or the resolved model name is invalid.
     """
-    provider = os.environ.get("LLM_PROVIDER")
-    gemini_key = os.environ.get("GEMINI_API_KEY")
-    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+    model_override = model.strip() if model else ""
+    provider = _get_env_str("LLM_PROVIDER").lower()
+    gemini_key = _get_env_str("GEMINI_API_KEY")
+    openrouter_key = _get_env_str("OPENROUTER_API_KEY")
     claude_key = (
-        os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
-        or os.environ.get("CLAUDE_API_KEY")
-        or os.environ.get("ANTHROPIC_API_KEY")
+        _get_env_str("CLAUDE_CODE_OAUTH_TOKEN")
+        or _get_env_str("CLAUDE_API_KEY")
+        or _get_env_str("ANTHROPIC_API_KEY")
     )
 
     allowed_providers = {"gemini", "openrouter", "claude", "anthropic"}
 
     if provider:
-        provider = provider.strip().lower()
         if provider not in allowed_providers:
             raise ValidationError(
                 f"Unknown LLM provider specified: '{provider}'. "
@@ -1398,39 +1444,25 @@ def get_llm_client(model: str | None = None) -> LLMClient:
     if provider == "gemini":
         if not gemini_key:
             raise ValidationError("GEMINI_API_KEY environment variable is missing.")
-        model_name = model or _get_model_name("GEMINI_MODEL", _DEFAULT_GEMINI_MODEL)
-        if not (model_name.startswith("gemini-") or model_name.startswith("models/")):
-            raise ValidationError(
-                f"Invalid model name: '{model_name}'. "
-                "Gemini model names must start with 'gemini-' or 'models/' "
-                "(e.g., 'gemini-1.5-flash')."
-            )
+        model_name = model_override or _get_model_name(
+            "GEMINI_MODEL", _DEFAULT_GEMINI_MODEL
+        )
         return GeminiClient(api_key=gemini_key, model_name=model_name)
     elif provider == "openrouter":
         if not openrouter_key:
             raise ValidationError("OPENROUTER_API_KEY environment variable is missing.")
-        model_name = model or _get_model_name(
+        model_name = model_override or _get_model_name(
             "OPENROUTER_MODEL", _DEFAULT_OPENROUTER_MODEL
         )
-        if "/" not in model_name:
-            raise ValidationError(
-                f"Invalid model name: '{model_name}'. "
-                "OpenRouter model names must specify a provider prefix "
-                "(e.g., 'google/gemini-1.5-flash' or 'anthropic/claude-3')."
-            )
         return OpenRouterClient(api_key=openrouter_key, model_name=model_name)
     elif provider in ("claude", "anthropic"):
         if not claude_key:
             raise ValidationError(
                 "CLAUDE_CODE_OAUTH_TOKEN environment variable is missing."
             )
-        model_name = model or _get_model_name("CLAUDE_MODEL", _DEFAULT_CLAUDE_MODEL)
-        if not (model_name.startswith("claude-") or "/" in model_name):
-            raise ValidationError(
-                f"Invalid model name: '{model_name}'. "
-                "Claude model names must start with 'claude-' "
-                "(e.g., 'claude-sonnet-5')."
-            )
+        model_name = model_override or _get_model_name(
+            "CLAUDE_MODEL", _DEFAULT_CLAUDE_MODEL
+        )
         return ClaudeClient(api_key=claude_key, model_name=model_name)
     else:
         raise ValidationError(f"Unknown LLM provider specified: {provider}")
