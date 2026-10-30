@@ -87,7 +87,13 @@ skills:
       - "Python"
 ```
 
-Overwrite this file with your own work history, education, and skills. Every tailored variant is written to the branch alongside a generated `resumes/resume.json` and `resumes/resume.pdf`.
+Overwrite this file with your own work history, education, and skills. Every tailored variant is written to its application branch alongside a generated JSON Resume `.json` file and compiled `.pdf`.
+
+- **Supported top-level sections:** `basics`, `work`, `education`, `skills`, `projects`, and `meta`.
+- **Additional sections:** Unsupported JSON Resume sections (e.g. `awards`, `languages`) are ignored and dropped during auto-formatting.
+
+> [!TIP]
+> **Already have a `resume.json`?** Paste its contents directly into `resumes/resume.yaml` (replacing the placeholder file completely). Standard space-indented JSON is parsed as YAML by GitEmployed, and the `Auto-Format Resume` workflow automatically normalizes it into canonical YAML when pushed to `main`.
 
 ### `config/settings.yaml`
 
@@ -130,7 +136,9 @@ search:
 #   model: ""                         # optional override; empty = provider default
 ```
 
-- **`theme`**: Selects the [JSON Resume theme](https://jsonresume.org/themes) used to render `resume.pdf` — browse [npm](https://www.npmjs.com/search?q=jsonresume-theme) or GitHub for options. Accepts either an npm package pinned to an exact version (`"<package>@<version>"`) or a GitHub-only theme pinned to a full 40-character commit SHA (`"github:<owner>/<repo>#<sha>"`). GitEmployed installs the theme package — running its own code in the process — and later renders with it, so always pin to an exact version or commit SHA, never a floating branch, tag, or dist-tag like `latest`. Omit this key to fall back to a pinned default theme.
+- **`theme`**: Selects the [JSON Resume theme](https://jsonresume.org/themes) used to render `resume.pdf` — browse [npm](https://www.npmjs.com/search?q=jsonresume-theme) or GitHub for options. Omit this key to fall back to a pinned default theme.
+  - **Pinned versions required**: Accepts an npm package pinned to an exact version (`"<package>@<version>"`) or a GitHub-only theme pinned to a full 40-character commit SHA (`"github:<owner>/<repo>#<sha>"`). Always pin to an exact version or commit SHA — never a floating branch, tag, or dist-tag like `latest` — since theme code executes in Actions.
+  - **YAML compilation**: Themes do not need native YAML support. GitEmployed automatically compiles `resumes/resume.yaml` into a standard `.json` file before invoking `resumed` to render the PDF.
 - **`search.desired_salary_min`**: Optional minimum acceptable annual salary (positive integer in USD) passed to the AI triage prompt. When configured, jobs at or above your minimum receive top salary alignment scores (4.5–5.0), while jobs below it are scaled down proportionally. If omitted, the triage LLM evaluates compensation fit against market rates for your seniority level alone.
 - **`custom_queries`**: When non-empty, the scraper uses these queries instead of auto-generating them from your resume — useful for targeting new stacks or domains.
 - **`projects_v2`**: When configured, issue cards move through your Projects V2 board automatically and column moves are reflected back as labels. Without it (or while the placeholder is in place), the system falls back to repository labels (`ready-to-apply`, `applied`, `in-loop`, `rejected`).
@@ -167,6 +175,7 @@ gmail:
 - **Web research or job URL fetch fails**: if pages fail to parse due to anti-bot protection or rate limiting, add a Jina API key to your secrets or configure a dedicated search provider in `config/settings.yaml`.
 - **`custom_queries` / `fit_threshold` seem ignored**: verify `custom_queries` is a top-level key in `config/settings.yaml` (a sibling of `search`), not nested under it.
 - **Gmail sync isn't picking up emails**: confirm `gmail.label` in `config/settings.yaml` exactly matches your Gmail label's spelling (case-sensitive); confirm the sender passes DMARC (a spoofed or improperly-forwarded message is silently skipped, by design); then check the `Gmail Sync` workflow's run log under **Actions** for the specific skip/error reason.
+- **Exporting to a theme locally fails on `resumes/resume.yaml`**: JSON Resume CLI tools (`resumed`, `resume-cli`) expect a `.json` input file and cannot read `.yaml` directly. In Actions, GitEmployed compiles `resumes/resume.yaml` to JSON automatically before rendering. To preview a theme locally, generate a temporary `.json` file (e.g. `yq -o=json '.basics.profiles //= []' resumes/resume.yaml > /tmp/resume.json`) and pass it to `resumed export`. Note: some themes (including the default theme) crash if optional arrays like `basics.profiles` are missing from the input JSON, which canonical `resume.yaml` omits when empty.
 
 ---
 

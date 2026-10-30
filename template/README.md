@@ -12,7 +12,11 @@ A serverless, GitOps-driven job application and tracking system. GitHub Issues a
 
 ## Getting Started
 
-1. **Replace the placeholder resume** in `resumes/resume.yaml` (a YAML file in [JSON Resume](https://jsonresume.org/schema) format) with your real work history, then commit and push to `main`. The daily cron takes over from there.
+1. **Replace the placeholder resume** in `resumes/resume.yaml` (a YAML file in [JSON Resume](https://jsonresume.org/schema) format — supported sections: `basics`, `work`, `education`, `skills`, `projects`, `meta`) with your real work history.
+2. **Commit and push to `main`.** The daily cron takes over from there.
+
+> [!TIP]
+> **Already have a `resume.json`?** Paste its contents directly into `resumes/resume.yaml` (replacing the entire placeholder file). Standard space-indented JSON parses cleanly, and the `Auto-Format Resume` workflow will normalize it into clean YAML automatically on push.
 
 ## Configuration
 
@@ -31,7 +35,7 @@ Per-user options live in `config/settings.yaml` and are edited directly in that 
 - An npm package pinned to an exact version: `"<package>@<version>"`, e.g. `"@jsonresume/jsonresume-theme-professional@1.0.22"`
 - A GitHub-only theme pinned to a full 40-character commit SHA: `"github:<owner>/<repo>#<sha>"`
 
-GitEmployed installs the theme package — running its own code in the process — and later renders with it, so always pin to an exact version or commit SHA, never a floating branch, tag, or dist-tag like `latest`, since a theme maintainer could otherwise push new code that runs unreviewed in your repo's Actions. Omit this key to use the built-in default theme.
+GitEmployed installs the theme package — running its own code in the process — and later renders with it, so always pin to an exact version or commit SHA, never a floating branch, tag, or dist-tag like `latest`, since a theme maintainer could otherwise push new code that runs unreviewed in your repo's Actions. Omit this key to use the built-in default theme. Themes do not need native YAML support: GitEmployed compiles `resumes/resume.yaml` into a standard `.json` file automatically before rendering with `resumed` (if previewing a theme locally with `resumed export`, convert `resumes/resume.yaml` to `.json` first).
 
 ## Docs
 
