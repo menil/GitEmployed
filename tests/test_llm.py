@@ -6,6 +6,7 @@ import os
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import litellm
 import litellm.exceptions
 import pytest
 
@@ -391,7 +392,7 @@ def test_get_llm_client_default_gemini() -> None:
     assert isinstance(client, GeminiClient)
     assert client.api_key == "fake-gemini-key"
     assert client.model_name == _DEFAULT_GEMINI_MODEL
-    assert client.litellm_model == "gemini/models/gemini-2.5-flash"
+    assert client.litellm_model == "gemini/gemini-2.5-flash"
 
 
 @patch.dict(os.environ, {"OPENROUTER_API_KEY": "fake-or-key"}, clear=True)
@@ -453,7 +454,7 @@ def test_get_llm_client_gemini_model_override() -> None:
     client = get_llm_client(model="models/gemini-2.5-flash")
     assert isinstance(client, GeminiClient)
     assert client.model_name == "models/gemini-2.5-flash"
-    assert client.litellm_model == "gemini/models/gemini-2.5-flash"
+    assert client.litellm_model == "gemini/gemini-2.5-flash"
 
 
 @patch.dict(
@@ -626,7 +627,7 @@ def test_gemini_client_triage(
     assert res.reasoning == "Standard match"
     mock_completion.assert_called_once()
     called_kwargs = mock_completion.call_args[1]
-    assert called_kwargs["model"] == "gemini/models/gemini-2.5-flash"
+    assert called_kwargs["model"] == "gemini/gemini-2.5-flash"
     assert called_kwargs["api_key"] == "key"
 
 
@@ -1424,7 +1425,216 @@ def test_litellm_client_direct_instantiation() -> None:
         api_key="key", model_name="models/gemini-2.5-flash", provider="gemini"
     )
     assert client.model_name == "models/gemini-2.5-flash"
-    assert client.litellm_model == "gemini/models/gemini-2.5-flash"
+    assert client.litellm_model == "gemini/gemini-2.5-flash"
+
+
+@pytest.mark.parametrize(
+    ("model_name", "provider", "expected", "expected_provider"),
+    [
+        ("models/gemini-2.5-flash", "Gemini", "gemini/gemini-2.5-flash", "gemini"),
+        ("gemini-2.5-flash", "Gemini", "gemini/gemini-2.5-flash", "gemini"),
+        ("gemini/gemini-2.5-flash", "gemini", "gemini/gemini-2.5-flash", "gemini"),
+        ("models/gemini-2.5-flash", None, "gemini/gemini-2.5-flash", "gemini"),
+        ("gemini-2.5-flash", None, "gemini/gemini-2.5-flash", "gemini"),
+        ("gemini/models/gemini-2.5-flash", None, "gemini/gemini-2.5-flash", "gemini"),
+        (
+            "models/claude-sonnet-5",
+            None,
+            "openrouter/models/claude-sonnet-5",
+            "openrouter",
+        ),
+        (
+            "google/gemini-2.5-flash",
+            "OpenRouter",
+            "openrouter/google/gemini-2.5-flash",
+            "openrouter",
+        ),
+        (
+            "models/gemini-2.5-flash",
+            "OpenRouter",
+            "openrouter/models/gemini-2.5-flash",
+            "openrouter",
+        ),
+        (
+            "gemini/gemini-2.5-flash",
+            "OpenRouter",
+            "openrouter/gemini/gemini-2.5-flash",
+            "openrouter",
+        ),
+        (
+            "google/gemini-2.5-flash",
+            None,
+            "openrouter/google/gemini-2.5-flash",
+            "openrouter",
+        ),
+        ("claude-sonnet-5", None, "anthropic/claude-sonnet-5", "anthropic"),
+        (
+            "  anthropic/claude-sonnet-5  ",
+            "Claude",
+            "anthropic/claude-sonnet-5",
+            "anthropic",
+        ),
+        (
+            "  models/gemini-2.5-flash  ",
+            "Gemini",
+            "gemini/gemini-2.5-flash",
+            "gemini",
+        ),
+        ("gpt-4o", None, "gpt-4o", "openai"),
+    ],
+)
+def test_resolve_litellm_model_normalizes_and_preserves_provider(
+    model_name: str,
+    provider: str | None,
+    expected: str,
+    expected_provider: str,
+) -> None:
+    """Verify explicit provider precedence and Gemini `models/` stripping."""
+    resolved = LiteLLMClient._resolve_litellm_model(model_name, provider)
+    assert resolved == expected
+    parsed_model, parsed_provider, _, _ = litellm.get_llm_provider(resolved)
+    assert parsed_provider == expected_provider
+    if expected_provider == "gemini":
+        assert "/" not in parsed_model
+        assert not parsed_model.startswith("models/")
+
+
+@pytest.mark.parametrize(
+    ("model_name", "provider"),
+    [
+        ("models/gemini-2.5-flash", "Claude"),
+        ("claude-", "Claude"),
+        ("claude-sonnet-5", "Gemini"),
+        ("gpt-4o", "OpenRouter"),
+    ],
+)
+def test_resolve_litellm_model_rejects_mismatched_explicit_provider(
+    model_name: str, provider: str
+) -> None:
+    """Verify explicit-provider resolution enforces provider slug validation."""
+    with pytest.raises(ValidationError, match="Invalid model name"):
+        LiteLLMClient._resolve_litellm_model(model_name, provider)
+
+
+@pytest.mark.parametrize(
+    ("env_model", "expected_litellm"),
+    [
+        ("models/gemini-2.5-pro", "gemini/gemini-2.5-pro"),
+        ("gemini/gemini-2.5-flash", "gemini/gemini-2.5-flash"),
+        ("   ", "gemini/gemini-2.5-flash"),
+    ],
+)
+def test_get_llm_client_gemini_accepts_prefixed_and_blank_env_models(
+    env_model: str, expected_litellm: str
+) -> None:
+    """Verify GEMINI_MODEL accepts `models/` and `gemini/` and falls back on blank."""
+    with patch.dict(
+        os.environ,
+        {"GEMINI_API_KEY": "fake-gemini-key", "GEMINI_MODEL": env_model},
+        clear=True,
+    ):
+        client = get_llm_client()
+    assert isinstance(client, GeminiClient)
+    assert client.litellm_model == expected_litellm
+
+
+@pytest.mark.parametrize(
+    "bad_model",
+    [
+        "models/",
+        "gemini/",
+        "gemini-",
+        "models/gpt-4o",
+        "models/models/gemini-2.5-flash",
+    ],
+)
+def test_get_llm_client_gemini_rejects_degenerate_models(bad_model: str) -> None:
+    """Verify bare prefixes, double prefixes, and non-Gemini slugs fail fast."""
+    with (
+        patch.dict(os.environ, {"GEMINI_API_KEY": "fake-gemini-key"}, clear=True),
+        pytest.raises(ValidationError, match="Invalid model name"),
+    ):
+        get_llm_client(model=bad_model)
+
+
+def test_get_llm_client_claude_rejects_cross_provider_model() -> None:
+    """Verify Claude rejects non-Claude `vendor/model` overrides."""
+    with (
+        patch.dict(
+            os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-test"}, clear=True
+        ),
+        pytest.raises(ValidationError, match="Invalid model name"),
+    ):
+        get_llm_client(model="models/gemini-2.5-flash")
+
+
+def test_get_llm_client_strips_whitespace_from_env_vars() -> None:
+    """Verify whitespace-padded secrets and blank LLM_PROVIDER are stripped cleanly."""
+    with patch.dict(
+        os.environ,
+        {
+            "LLM_PROVIDER": "   ",
+            "GEMINI_API_KEY": "  fake-gemini-key\n",
+            "GEMINI_MODEL": "  models/gemini-2.5-flash  ",
+        },
+        clear=True,
+    ):
+        client = get_llm_client(model="   ")
+    assert isinstance(client, GeminiClient)
+    assert client.api_key == "fake-gemini-key"
+    assert client.model_name == "models/gemini-2.5-flash"
+    assert client.litellm_model == "gemini/gemini-2.5-flash"
+
+
+@patch("litellm.completion")
+def test_claude_oauth_headers_not_sent_to_non_anthropic_model(
+    mock_completion: MagicMock,
+) -> None:
+    """Verify sk-ant-oat Bearer headers are never attached to non-Anthropic targets."""
+    mock_completion.return_value = _mock_completion_response("ok")
+    client = LiteLLMClient(
+        api_key="sk-ant-oat01-test",
+        model_name="google/gemini-2.5-flash",
+        provider="openrouter",
+    )
+    client.chat([ChatMessage(role="user", content="ping")])
+    called_kwargs = mock_completion.call_args[1]
+    assert "extra_headers" not in called_kwargs
+
+
+def test_gemini_client_builds_unprefixed_wire_url() -> None:
+    """Regression test: real LiteLLM URL builder hits `/v1beta/models/<slug>`."""
+    payload = {
+        "candidates": [
+            {
+                "content": {"parts": [{"text": "ok"}], "role": "model"},
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 1,
+            "candidatesTokenCount": 1,
+            "totalTokenCount": 2,
+        },
+    }
+    mock_resp = MagicMock(status_code=200)
+    mock_resp.json.return_value = payload
+
+    with patch(
+        "litellm.llms.custom_httpx.http_handler.HTTPHandler.post",
+        return_value=mock_resp,
+    ) as mock_post:
+        client = GeminiClient(
+            api_key="fake-gemini-key", model_name="models/gemini-2.5-flash"
+        )
+        reply = client.chat([ChatMessage(role="user", content="ping")])
+
+    assert reply.content == "ok"
+    called_url = mock_post.call_args.kwargs["url"]
+    assert called_url == (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-2.5-flash:generateContent"
+    )
 
 
 def test_triage_result_pydantic_serialization() -> None:
