@@ -1,6 +1,9 @@
 # __GITEMPLOYED_SETUP_PENDING__   # sentinel
 # Replace this placeholder with your real resume, then commit & push to main.
 # It is a YAML file in JSON Resume format — see https://jsonresume.org/schema.
+# Already have a resume.json? Paste its contents here (replacing this entire
+# file, including the comment lines above). Standard space-indented JSON parses
+# cleanly, and the Auto-Format Resume workflow will normalize it into clean YAML on push.
 basics:
   name: "Your Name Here"
 work: []
