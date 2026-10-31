@@ -97,7 +97,7 @@ research:
   block_private_ips: true
 
   # Optional model override for the responder agent only. Empty (default) uses
-  # the provider default (models/gemini-2.5-flash for Gemini,
+  # the provider default (models/gemini-3.8-flash for Gemini,
   # openrouter/free for OpenRouter); triage/tailor keep using
   # GEMINI_MODEL / OPENROUTER_MODEL regardless.
   model: ""

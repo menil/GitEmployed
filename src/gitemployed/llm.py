@@ -1197,7 +1197,7 @@ class LiteLLMClient(LLMClient):
                 raise ValidationError(
                     f"Invalid model name: '{model_name}'. "
                     "Gemini model names must be 'gemini-<model>' (optionally prefixed "
-                    "with 'models/' or 'gemini/', e.g., 'gemini-2.5-flash')."
+                    "with 'models/' or 'gemini/', e.g., 'gemini-3.8-flash')."
                 )
             return f"gemini/{clean_name}"
         if provider_lower == "openrouter":
@@ -1205,7 +1205,7 @@ class LiteLLMClient(LLMClient):
                 raise ValidationError(
                     f"Invalid model name: '{model_name}'. "
                     "OpenRouter model names must specify a provider prefix "
-                    "(e.g., 'google/gemini-2.5-flash' or 'anthropic/claude-sonnet-5')."
+                    "(e.g., 'google/gemini-3.8-flash' or 'anthropic/claude-sonnet-5')."
                 )
             return f"openrouter/{model_name}"
         if provider_lower in ("claude", "anthropic"):
@@ -1359,7 +1359,7 @@ class GeminiClient(LiteLLMClient):
     """LLM client implementation for Gemini models via LiteLLM."""
 
     def __init__(
-        self, api_key: str, model_name: str = "models/gemini-2.5-flash"
+        self, api_key: str, model_name: str = "models/gemini-3.8-flash"
     ) -> None:
         super().__init__(api_key=api_key, model_name=model_name, provider="Gemini")
 
@@ -1378,7 +1378,7 @@ class ClaudeClient(LiteLLMClient):
         super().__init__(api_key=api_key, model_name=model_name, provider="Claude")
 
 
-_DEFAULT_GEMINI_MODEL = "models/gemini-2.5-flash"
+_DEFAULT_GEMINI_MODEL = "models/gemini-3.8-flash"
 _DEFAULT_OPENROUTER_MODEL = "openrouter/free"
 _DEFAULT_CLAUDE_MODEL = "claude-sonnet-5"
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."

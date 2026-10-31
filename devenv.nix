@@ -21,6 +21,7 @@ in
   packages = [
     pkgs.git
     pkgs.just
+    pkgs.nodejs
     pkgs.shellcheck
     inputs.pdf-vdiff.packages.${pkgs.stdenv.system}.default
     pkgs.dejavu_fonts
