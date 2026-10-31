@@ -392,7 +392,7 @@ def test_get_llm_client_default_gemini() -> None:
     assert isinstance(client, GeminiClient)
     assert client.api_key == "fake-gemini-key"
     assert client.model_name == _DEFAULT_GEMINI_MODEL
-    assert client.litellm_model == "gemini/gemini-2.5-flash"
+    assert client.litellm_model == "gemini/gemini-3.8-flash"
 
 
 @patch.dict(os.environ, {"OPENROUTER_API_KEY": "fake-or-key"}, clear=True)
@@ -627,7 +627,7 @@ def test_gemini_client_triage(
     assert res.reasoning == "Standard match"
     mock_completion.assert_called_once()
     called_kwargs = mock_completion.call_args[1]
-    assert called_kwargs["model"] == "gemini/gemini-2.5-flash"
+    assert called_kwargs["model"] == "gemini/gemini-3.8-flash"
     assert called_kwargs["api_key"] == "key"
 
 
@@ -1521,7 +1521,7 @@ def test_resolve_litellm_model_rejects_mismatched_explicit_provider(
     [
         ("models/gemini-2.5-pro", "gemini/gemini-2.5-pro"),
         ("gemini/gemini-2.5-flash", "gemini/gemini-2.5-flash"),
-        ("   ", "gemini/gemini-2.5-flash"),
+        ("   ", "gemini/gemini-3.8-flash"),
     ],
 )
 def test_get_llm_client_gemini_accepts_prefixed_and_blank_env_models(
