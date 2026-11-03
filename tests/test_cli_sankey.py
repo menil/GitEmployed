@@ -167,3 +167,18 @@ def test_write_step_summary_failure(caplog) -> None:
     # Non-writable path should log a warning instead of crashing
     _write_step_summary("/nonexistent_dir/summary.md", [], "applied")
     assert "Could not write to GitHub step summary" in caplog.text
+
+
+@patch("gitemployed.cli.sankey.generate_sankey_flows")
+@patch("gitemployed.cli.sankey.GitHubClient")
+@patch("pathlib.Path.write_text")
+def test_output_file_write_error(
+    mock_write: MagicMock,
+    mock_client: MagicMock,
+    mock_generate: MagicMock,
+    caplog,
+) -> None:
+    mock_generate.return_value = []
+    mock_write.side_effect = OSError("Disk full")
+    run_main(argv=["sankey.py", "--output", "out.txt"], expected_code=1)
+    assert "Failed to write output to out.txt" in caplog.text

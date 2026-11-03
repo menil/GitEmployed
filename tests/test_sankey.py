@@ -85,6 +85,8 @@ def test_applied_funnel_offer_and_rejection() -> None:
     issues = [
         _issue(1, labels=["offer-received"]),
         _issue(2, labels=["rejected"]),
+        # Direct offer without in-loop
+        _issue(3, labels=["offer-received"]),
     ]
     events = {
         1: [
@@ -97,6 +99,10 @@ def test_applied_funnel_offer_and_rejection() -> None:
             _labeled_event("in-loop", "2026-01-05T00:00:00Z"),
             _labeled_event("rejected", "2026-01-12T00:00:00Z"),
         ],
+        3: [
+            _labeled_event("applied", "2026-01-03T00:00:00Z"),
+            _labeled_event("offer-received", "2026-01-07T00:00:00Z"),
+        ],
     }
 
     flows = build_sankey_flows(issues, events, scope="applied")
@@ -105,6 +111,7 @@ def test_applied_funnel_offer_and_rejection() -> None:
     assert flow_map.get(("Applied", "In Loop")) == 2
     assert flow_map.get(("In Loop", "Offer Received")) == 1
     assert flow_map.get(("In Loop", "Rejected")) == 1
+    assert flow_map.get(("Applied", "Offer Received")) == 1
 
 
 def test_applied_funnel_direct_rejection_and_active() -> None:
@@ -276,6 +283,20 @@ def test_full_funnel_transitions() -> None:
             labels=["applied"],
             created_at="2026-01-05T00:00:00Z",
         ),
+        # Closed unprocessed
+        _issue(
+            6,
+            labels=[],
+            state="closed",
+            created_at="2026-01-06T00:00:00Z",
+        ),
+        # Open backlog without triage-pending
+        _issue(
+            7,
+            labels=[],
+            state="open",
+            created_at="2026-01-07T00:00:00Z",
+        ),
     ]
     events = {
         5: [
@@ -290,6 +311,8 @@ def test_full_funnel_transitions() -> None:
     assert flow_map.get(("Discovered Roles", "Mismatch (Salary)")) == 1
     assert flow_map.get(("Discovered Roles", "Triage Pending (Active)")) == 1
     assert flow_map.get(("Discovered Roles", "Ready to Apply")) == 3
+    assert flow_map.get(("Discovered Roles", "Closed Unprocessed")) == 1
+    assert flow_map.get(("Discovered Roles", "Backlog")) == 1
     assert flow_map.get(("Ready to Apply", "Archived / Skipped")) == 1
     assert flow_map.get(("Ready to Apply", "To Apply (Backlog)")) == 1
     assert flow_map.get(("Ready to Apply", "Applied")) == 1
