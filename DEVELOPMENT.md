@@ -97,6 +97,38 @@ so you get the raw `.csv`/`.xlsx` directly without unzipping anything
 yourself. See [`specs/esd-export.md`](specs/esd-export.md) for the full design, including
 what counts as an "activity" and how periods/dedup/caps work.
 
+### Generating a Job Search Sankey Diagram
+
+`sankey.yml` is manual-only (`workflow_dispatch`) to generate flow diagrams of
+your job hunt directly from your issue lifecycle history.
+
+To run it: open the **Actions** tab, select **Job Search Sankey**, click
+**Run workflow**, and select your preferences:
+
+- **scope** (`applied`/`full`):
+  - `applied` (default): Traditional job hunt funnel starting at submitted
+    applications (`Applied -> In Loop -> Offer / Rejected`, plus
+    awaiting response and ghosted roles).
+  - `full`: Entire GitEmployed lifecycle starting at discovery
+    (`Discovered Roles -> Mismatched / Triage Pending -> Ready to Apply -> Applied...`).
+- **format** (`sankeymatic`/`mermaid`/`json`/`csv`): Primary export format.
+- **stale_days**: Number of days of inactivity before an open role in `applied`
+  is categorized as `Ghosted / Stale` (default: `30`).
+- **start_date** / **end_date** (`YYYY-MM-DD`, optional): Date bounds for
+  filtering applications.
+
+**Viewing Results:**
+1. **In GitHub Actions**: When the workflow completes, open the workflow run's
+   **Summary** page. A native Mermaid Sankey diagram renders directly in the
+   summary alongside a collapsible, copy-paste-ready text block for
+   [SankeyMATIC](https://sankeymatic.com/).
+2. **Artifact Download**: The formatted file is uploaded as a `sankey-diagram`
+   artifact bundle.
+3. **Local CLI**: You can also run the generator locally:
+   ```bash
+   gitemployed-sankey --scope applied --format sankeymatic
+   ```
+
 ---
 
 ## Issue Labels & Lifecycle
