@@ -7,7 +7,10 @@ label events, supporting both 'applied' (traditional job search funnel) and
 
 from __future__ import annotations
 
+import csv
 import datetime as dt
+import io
+import json
 import logging
 from collections import Counter
 from dataclasses import dataclass
@@ -421,4 +424,109 @@ def generate_sankey_flows(
         stale_days=stale_days,
         start_date=start_date,
         end_date=end_date,
+    )
+
+
+def format_sankeymatic(flows: list[SankeyFlow]) -> str:
+    """Format Sankey flows for SankeyMATIC (https://sankeymatic.com).
+
+    Produces plain-text lines of the form:
+        Source [Count] Target
+    """
+    if not flows:
+        return "// No matching job applications found"
+    lines = [f"{flow.source} [{flow.count}] {flow.target}" for flow in flows]
+    return "\n".join(lines)
+
+
+MERMAID_SANKEY_HEADER = """---
+config:
+  sankey:
+    nodeAlignment: left
+---
+sankey-beta"""
+
+
+def _escape_mermaid_node(name: str) -> str:
+    """Escape node name for Mermaid sankey-beta CSV parser.
+
+    Commas and double quotes require the value to be wrapped in double quotes,
+    with internal quotes escaped by doubling them per RFC 4180.
+    """
+    if "," in name or '"' in name:
+        escaped = name.replace('"', '""')
+        return f'"{escaped}"'
+    return name
+
+
+def format_mermaid(flows: list[SankeyFlow]) -> str:
+    """Format Sankey flows as a Mermaid sankey-beta code block.
+
+    Configures nodeAlignment to 'left' so earlier exit stages (like Ghosted)
+    render with shorter topological length rather than stretching to the far right.
+
+    Produces lines of the form:
+        ---
+        config:
+          sankey:
+            nodeAlignment: left
+        ---
+        sankey-beta
+        Source, Target, Count
+    """
+    if not flows:
+        return f"{MERMAID_SANKEY_HEADER}\n%% No matching job applications found"
+    lines = [MERMAID_SANKEY_HEADER]
+    for flow in flows:
+        clean_src = _escape_mermaid_node(flow.source)
+        clean_dst = _escape_mermaid_node(flow.target)
+        src_sep = "," if clean_dst.startswith('"') else ", "
+        lines.append(f"{clean_src}{src_sep}{clean_dst}, {flow.count}")
+    return "\n".join(lines)
+
+
+def format_json(flows: list[SankeyFlow]) -> str:
+    """Format Sankey flows as JSON array of objects."""
+    data = [
+        {"source": flow.source, "target": flow.target, "count": flow.count}
+        for flow in flows
+    ]
+    return json.dumps(data, indent=2)
+
+
+def format_csv(flows: list[SankeyFlow]) -> str:
+    """Format Sankey flows as CSV table."""
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(["source", "target", "count"])
+    for flow in flows:
+        writer.writerow([flow.source, flow.target, flow.count])
+    return output.getvalue().rstrip("\n")
+
+
+def format_flows(flows: list[SankeyFlow], fmt: str) -> str:
+    """Format Sankey flows into the specified output format.
+
+    Args:
+        flows: List of SankeyFlow transitions.
+        fmt: Format name ('sankeymatic', 'mermaid', 'json', 'csv').
+
+    Returns:
+        Formatted string representation.
+
+    Raises:
+        ValueError: If fmt is unsupported.
+    """
+    normalized = fmt.lower().strip()
+    if normalized == "sankeymatic":
+        return format_sankeymatic(flows)
+    if normalized == "mermaid":
+        return format_mermaid(flows)
+    if normalized == "json":
+        return format_json(flows)
+    if normalized == "csv":
+        return format_csv(flows)
+    raise ValueError(
+        f"Unsupported format {fmt!r}. Expected one of: "
+        "'sankeymatic', 'mermaid', 'json', 'csv'"
     )
