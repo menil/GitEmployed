@@ -8,11 +8,17 @@ from unittest.mock import MagicMock
 import pytest
 
 from gitemployed.sankey import (
+    SankeyFlow,
     _fetch_timeline_events_graphql,
     _parse_iso,
     _resolve_primary_mismatch,
     _should_fetch_timeline,
     build_sankey_flows,
+    format_csv,
+    format_flows,
+    format_json,
+    format_mermaid,
+    format_sankeymatic,
     generate_sankey_flows,
 )
 
@@ -387,3 +393,63 @@ def test_generate_sankey_flows_with_client() -> None:
     assert isinstance(flows, list)
     assert len(flows) > 0
     assert flows[0].source == "Applied"
+
+
+def test_format_sankeymatic() -> None:
+    assert format_sankeymatic([]) == "// No matching job applications found"
+
+    flows = [
+        SankeyFlow("Applied", "In Loop", 3),
+        SankeyFlow("In Loop", "Offer Received", 1),
+    ]
+    out = format_sankeymatic(flows)
+    assert "Applied [3] In Loop" in out
+    assert "In Loop [1] Offer Received" in out
+
+
+def test_format_mermaid() -> None:
+    empty_out = format_mermaid([])
+    assert "nodeAlignment: left" in empty_out
+    assert "%% No matching job applications found" in empty_out
+
+    flows = [
+        SankeyFlow("Applied", "In Loop", 3),
+        SankeyFlow("In Loop", "Offer Received", 1),
+    ]
+    out = format_mermaid(flows)
+    assert "nodeAlignment: left" in out
+    assert "sankey-beta" in out
+    assert "Applied, In Loop, 3" in out
+    assert "In Loop, Offer Received, 1" in out
+
+    # Node names with commas or quotes are properly escaped
+    special_flows = [
+        SankeyFlow("O'Reilly", 'Role "Lead", Senior', 2),
+    ]
+    special_out = format_mermaid(special_flows)
+    assert "O'Reilly" in special_out
+    assert '"Role ""Lead"", Senior"' in special_out
+
+
+def test_format_json_and_csv() -> None:
+    flows = [
+        SankeyFlow("Applied", "In Loop", 3),
+    ]
+    json_out = format_json(flows)
+    assert '"source": "Applied"' in json_out
+    assert '"count": 3' in json_out
+
+    csv_out = format_csv(flows)
+    assert "source,target,count" in csv_out
+    assert "Applied,In Loop,3" in csv_out
+
+
+def test_format_flows_dispatch() -> None:
+    flows = [SankeyFlow("Applied", "In Loop", 1)]
+    assert "[" in format_flows(flows, "sankeymatic")
+    assert "sankey-beta" in format_flows(flows, "mermaid")
+    assert '"source"' in format_flows(flows, "json")
+    assert "source,target,count" in format_flows(flows, "csv")
+
+    with pytest.raises(ValueError, match="Unsupported format 'xml'"):
+        format_flows(flows, "xml")
