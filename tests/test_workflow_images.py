@@ -23,6 +23,7 @@ SLIM_WORKFLOWS = [
     "project-status-sync.yml",
     "gmail-sync.yml",
     "esd-export.yml",
+    "sankey.yml",
     "check-setup.yml",
     "scrape-jobs.yml",
 ]

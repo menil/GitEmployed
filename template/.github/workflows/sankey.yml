@@ -1,0 +1,102 @@
+name: Job Search Sankey
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Funnel scope'
+        type: choice
+        required: true
+        default: 'applied'
+        options:
+          - 'applied'
+          - 'full'
+      format:
+        description: 'Primary export file format'
+        type: choice
+        required: true
+        default: 'sankeymatic'
+        options:
+          - 'sankeymatic'
+          - 'mermaid'
+          - 'json'
+          - 'csv'
+      stale_days:
+        description: 'Days inactive in "applied" to mark Ghosted / Stale'
+        type: string
+        required: false
+        default: '30'
+      start_date:
+        description: 'Inclusive lower bound, YYYY-MM-DD (blank = unbounded)'
+        type: string
+        required: false
+        default: ''
+      end_date:
+        description: 'Inclusive upper bound, YYYY-MM-DD (blank = today)'
+        type: string
+        required: false
+        default: ''
+
+# This job only reads issues and label history; it never writes labels,
+# comments, or Projects V2 state.
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  export:
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/menil/gitemployed:slim
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Generate Sankey Diagram
+        id: generate
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          INPUT_SCOPE: ${{ inputs.scope }}
+          INPUT_FORMAT: ${{ inputs.format }}
+          INPUT_STALE_DAYS: ${{ inputs.stale_days }}
+          INPUT_START_DATE: ${{ inputs.start_date }}
+          INPUT_END_DATE: ${{ inputs.end_date }}
+        run: |
+          set -e
+          case "$INPUT_FORMAT" in
+            sankeymatic) EXT="txt" ;;
+            mermaid) EXT="mmd" ;;
+            json) EXT="json" ;;
+            csv) EXT="csv" ;;
+            *) EXT="txt" ;;
+          esac
+          OUTPUT="sankey.${EXT}"
+          echo "output=$OUTPUT" >> "$GITHUB_OUTPUT"
+
+          ARGS=(
+            "--scope" "$INPUT_SCOPE"
+            "--format" "$INPUT_FORMAT"
+            "--output" "$OUTPUT"
+            "--step-summary" "$GITHUB_STEP_SUMMARY"
+          )
+          if [ -n "${INPUT_STALE_DAYS:-}" ]; then
+            ARGS+=("--stale-days" "$INPUT_STALE_DAYS")
+          fi
+          if [ -n "${INPUT_START_DATE:-}" ]; then
+            ARGS+=("--start-date" "$INPUT_START_DATE")
+          fi
+          if [ -n "${INPUT_END_DATE:-}" ]; then
+            ARGS+=("--end-date" "$INPUT_END_DATE")
+          fi
+
+          python -m gitemployed.cli.sankey "${ARGS[@]}"
+
+      - name: Upload Sankey Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: sankey-diagram
+          path: ${{ steps.generate.outputs.output }}
+          if-no-files-found: error
