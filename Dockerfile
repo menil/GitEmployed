@@ -1,6 +1,6 @@
 # Stage 1: Build pdf-vdiff Rust CLI and download pdfium shared library
 # Uses the official rust:1-slim-bookworm (Rust 1.x stable) pinned by immutable digest
-FROM rust:1-slim-bookworm@sha256:a24e292b4af7bdee351a31d3a6379972a5652f0ea22a1b6d6883324ac4f5097c AS rust-builder
+FROM rust:1-slim-bookworm@sha256:24707e70a4f1e23d9a7b25202ec43126d28a52294b96aad5c670df1fd1f1d400 AS rust-builder
 ARG TARGETARCH
 ARG PDFIUM_VERSION=7881
 ARG PDF_VDIFF_TAG=pdf-vdiff-v0.1.3
