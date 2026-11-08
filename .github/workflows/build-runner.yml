@@ -121,9 +121,10 @@ jobs:
             -v "$PWD/.github/fixtures:/work" -w /work \
             "${{ steps.image-name.outputs.image }}:ci-staging-full-${{ github.sha }}" \
             sh -c '
-              su -s /bin/sh pptruser -c "pdf-vdiff --help" &&
               su -s /bin/sh pptruser -c "bun /opt/bun/bin/resumed export resume.json -t @jsonresume/jsonresume-theme-professional -o /tmp/resume.pdf --puppeteer-arg=--no-sandbox" &&
-              [ -s /tmp/resume.pdf ]
+              [ -s /tmp/resume.pdf ] &&
+              su -s /bin/sh pptruser -c "pdf-vdiff /tmp/resume.pdf /tmp/resume.pdf -o /tmp/diff.pdf" &&
+              [ -s /tmp/diff.pdf ]
             '
 
       - name: Promote Docker Image Tags

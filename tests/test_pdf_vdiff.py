@@ -87,6 +87,27 @@ def test_generate_pdf_diff_with_custom_options(tmp_path: pathlib.Path) -> None:
         assert "line" in cmd
 
 
+def test_generate_pdf_diff_exit_codes(tmp_path: pathlib.Path) -> None:
+    """Verify generate_pdf_diff accepts both 0 (identical) and 1 (diff) exit codes."""
+    base_pdf = tmp_path / "base.pdf"
+    tailored_pdf = tmp_path / "tailored.pdf"
+    out_pdf = tmp_path / "diff.pdf"
+    base_pdf.write_bytes(b"%PDF-1.4 base")
+    tailored_pdf.write_bytes(b"%PDF-1.4 tailored")
+
+    with (
+        mock.patch("shutil.which", return_value="/usr/local/bin/pdf-vdiff"),
+        mock.patch("gitemployed.renderer.subprocess.run") as mock_run,
+    ):
+        # Exit code 0: Identical documents (clean diff generated without highlights)
+        mock_run.return_value = mock.MagicMock(returncode=0, stderr="", stdout="")
+        assert generate_pdf_diff(base_pdf, tailored_pdf, out_pdf) == out_pdf
+
+        # Exit code 1: Differences found (diff generated with highlights)
+        mock_run.return_value = mock.MagicMock(returncode=1, stderr="", stdout="")
+        assert generate_pdf_diff(base_pdf, tailored_pdf, out_pdf) == out_pdf
+
+
 @mock.patch("gitemployed.cli.triage.generate_pdf_diff")
 @mock.patch("gitemployed.cli.triage.compile_resume")
 @mock.patch("gitemployed.cli.triage.ensure_theme_installed", return_value="theme-pkg")
