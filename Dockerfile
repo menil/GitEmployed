@@ -2,8 +2,8 @@
 # Uses the official rust:1-slim-bookworm (Rust 1.x stable) pinned by immutable digest
 FROM rust:1-slim-bookworm@sha256:24707e70a4f1e23d9a7b25202ec43126d28a52294b96aad5c670df1fd1f1d400 AS rust-builder
 ARG TARGETARCH
-ARG PDFIUM_VERSION=7881
-ARG PDF_VDIFF_TAG=pdf-vdiff-v0.1.3
+ARG PDFIUM_VERSION=8125
+ARG PDF_VDIFF_TAG=pdf-vdiff-v0.1.6
 WORKDIR /build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo install --git https://github.com/menil/pdf-vdiff.git --tag "${PDF_VDIFF_TAG}" --root /opt/pdf-vdiff
+    cargo install --git https://github.com/menil/pdf-vdiff.git --tag "${PDF_VDIFF_TAG}" --locked --root /opt/pdf-vdiff
 
 RUN mkdir -p /opt/pdf-vdiff/lib && \
     case "${TARGETARCH:-amd64}" in \
@@ -125,4 +125,3 @@ COPY src ./src
 
 # Install the project system-wide
 RUN uv sync --frozen
-
