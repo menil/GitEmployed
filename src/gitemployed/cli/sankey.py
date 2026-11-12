@@ -17,6 +17,7 @@ from pathlib import Path
 from gitemployed.cli import setup_logging
 from gitemployed.github_client import GitHubClient, GitHubClientError
 from gitemployed.sankey import (
+    format_all_flows,
     format_flows,
     format_mermaid,
     format_sankeymatic,
@@ -91,19 +92,31 @@ def main() -> None:
         logger.error("Failed to build Sankey flows: %s", e)
         sys.exit(1)
 
-    formatted = format_flows(flows, args.format)
-
-    if args.output:
+    if args.output_dir:
         try:
-            output_path = Path(args.output)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(formatted, encoding="utf-8")
-            logger.info("Wrote %s output to %s", args.format, args.output)
+            output_dir = Path(args.output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for filename, content in format_all_flows(flows).items():
+                file_path = output_dir / filename
+                file_path.write_text(content, encoding="utf-8")
+                logger.info("Wrote %s output to %s", filename, file_path)
         except OSError as e:
-            logger.error("Failed to write output to %s: %s", args.output, e)
+            logger.error("Failed to write output to %s: %s", args.output_dir, e)
             sys.exit(1)
     else:
-        print(formatted)
+        fmt = args.format or "sankeymatic"
+        formatted = format_flows(flows, fmt)
+        if args.output:
+            try:
+                output_path = Path(args.output)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(formatted, encoding="utf-8")
+                logger.info("Wrote %s output to %s", fmt, args.output)
+            except OSError as e:
+                logger.error("Failed to write output to %s: %s", args.output, e)
+                sys.exit(1)
+        else:
+            print(formatted)
 
     # If --step-summary was requested or GITHUB_STEP_SUMMARY is present
     summary_dest = args.step_summary or os.environ.get("GITHUB_STEP_SUMMARY")
@@ -125,8 +138,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--format",
         choices=("sankeymatic", "mermaid", "json", "csv"),
-        default="sankeymatic",
-        help="Output format (default: sankeymatic).",
+        default=None,
+        help="Output format (default: sankeymatic when writing single file or stdout).",
     )
     parser.add_argument(
         "--stale-days",
@@ -153,6 +166,15 @@ def _parse_args() -> argparse.Namespace:
         help="Output file path (default: print to stdout).",
     )
     parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help=(
+            "Directory to write all format outputs (sankey.txt, sankey.mmd, "
+            "sankey.json, sankey.csv)."
+        ),
+    )
+    parser.add_argument(
         "--step-summary",
         type=str,
         default=None,
@@ -160,6 +182,10 @@ def _parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
+    if args.output and args.output_dir:
+        parser.error("Cannot specify both --output and --output-dir.")
+    if args.format and args.output_dir:
+        parser.error("Cannot specify both --format and --output-dir.")
     if args.start_date and args.end_date and args.start_date > args.end_date:
         parser.error("--start-date must not be after --end-date.")
 
