@@ -110,7 +110,7 @@ def test_applied_funnel_offer_and_rejection() -> None:
 
     assert flow_map.get(("Applied", "In Loop")) == 2
     assert flow_map.get(("In Loop", "Offer Received")) == 1
-    assert flow_map.get(("In Loop", "Rejected")) == 1
+    assert flow_map.get(("In Loop", "Rejected after Interview Loop")) == 1
     assert flow_map.get(("Applied", "Offer Received")) == 1
 
 
@@ -148,9 +148,9 @@ def test_applied_funnel_direct_rejection_and_active() -> None:
     flows = build_sankey_flows(issues, events, scope="applied", now=now)
     flow_map = {(f.source, f.target): f.count for f in flows}
 
-    assert flow_map.get(("Applied", "Rejected")) == 1
+    assert flow_map.get(("Applied", "Rejected after Application")) == 1
     assert flow_map.get(("Applied", "Awaiting Response (Active)")) == 1
-    assert flow_map.get(("Applied", "Ghosted / Stale")) == 1
+    assert flow_map.get(("Applied", "Ghosted after Application")) == 1
 
 
 def test_applied_funnel_implied_applied_from_in_loop() -> None:
@@ -174,6 +174,55 @@ def test_applied_funnel_implied_applied_from_in_loop() -> None:
     flow_map = {(f.source, f.target): f.count for f in flows}
     assert flow_map.get(("Applied", "In Loop")) == 1
     assert flow_map.get(("In Loop", "Interviewing (Active)")) == 1
+
+
+def test_applied_funnel_reverted_in_loop_error() -> None:
+    """Issue erroneously marked in-loop then reverted to applied stays in applied."""
+    now = dt.datetime(2026, 1, 20, 0, 0, tzinfo=dt.UTC)
+    issues = [
+        _issue(
+            1,
+            labels=["applied"],
+            state="open",
+            updated_at="2026-01-18T00:00:00Z",
+        ),
+    ]
+    events = {
+        1: [
+            _labeled_event("applied", "2026-01-05T00:00:00Z"),
+            _labeled_event("in-loop", "2026-01-10T00:00:00Z"),
+            _labeled_event("applied", "2026-01-12T00:00:00Z"),
+        ],
+    }
+    flows = build_sankey_flows(issues, events, scope="applied", now=now)
+    flow_map = {(f.source, f.target): f.count for f in flows}
+    assert flow_map.get(("Applied", "Awaiting Response (Active)")) == 1
+    assert flow_map.get(("Applied", "In Loop")) is None
+
+
+def test_applied_funnel_reverted_in_loop_then_rejected() -> None:
+    """Issue marked in-loop by error, reverted to applied, then rejected."""
+    now = dt.datetime(2026, 1, 20, 0, 0, tzinfo=dt.UTC)
+    issues = [
+        _issue(
+            1,
+            labels=["rejected"],
+            state="closed",
+            updated_at="2026-01-18T00:00:00Z",
+        ),
+    ]
+    events = {
+        1: [
+            _labeled_event("applied", "2026-01-05T00:00:00Z"),
+            _labeled_event("in-loop", "2026-01-10T00:00:00Z"),
+            _labeled_event("applied", "2026-01-12T00:00:00Z"),
+            _labeled_event("rejected", "2026-01-15T00:00:00Z"),
+        ],
+    }
+    flows = build_sankey_flows(issues, events, scope="applied", now=now)
+    flow_map = {(f.source, f.target): f.count for f in flows}
+    assert flow_map.get(("Applied", "Rejected after Application")) == 1
+    assert flow_map.get(("Applied", "In Loop")) is None
 
 
 def test_applied_funnel_in_loop_active_and_stale() -> None:
@@ -220,7 +269,7 @@ def test_applied_funnel_in_loop_active_and_stale() -> None:
     flow_map = {(f.source, f.target): f.count for f in flows}
 
     assert flow_map.get(("In Loop", "Interviewing (Active)")) == 1
-    assert flow_map.get(("In Loop", "Loop Stale")) == 1
+    assert flow_map.get(("In Loop", "Ghosted after Interview Loop")) == 1
     assert flow_map.get(("In Loop", "Withdrawn / Closed")) == 1
 
 
