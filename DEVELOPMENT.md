@@ -111,7 +111,6 @@ To run it: open the **Actions** tab, select **Job Search Sankey**, click
     stages for rejections, ghosting, and active roles).
   - `full`: Entire GitEmployed lifecycle starting at discovery
     (`Discovered Roles -> Mismatched / Triage Pending -> Ready to Apply -> Applied...`).
-- **format** (`sankeymatic`/`mermaid`/`json`/`csv`): Primary export format.
 - **stale_days**: Number of days of inactivity before an open role
   is categorized as ghosted (default: `30`).
 - **start_date** / **end_date** (`YYYY-MM-DD`, optional): Date bounds for
@@ -122,11 +121,16 @@ To run it: open the **Actions** tab, select **Job Search Sankey**, click
    **Summary** page. A native Mermaid Sankey diagram renders directly in the
    summary alongside a collapsible, copy-paste-ready text block for
    [SankeyMATIC](https://sankeymatic.com/).
-2. **Artifact Download**: The formatted file is uploaded as a `sankey-diagram`
+2. **Artifact Download**: All supported formats (`sankey.txt`, `sankey.mmd`,
+   `sankey.json`, `sankey.csv`) are uploaded together in the `sankey-diagram`
    artifact bundle.
 3. **Local CLI**: You can also run the generator locally:
    ```bash
+   # Output a single format to stdout or file
    gitemployed-sankey --scope applied --format sankeymatic
+
+   # Output all formats at once into a directory
+   gitemployed-sankey --scope applied --output-dir sankey-artifacts
    ```
 
 ---

@@ -14,6 +14,7 @@ from gitemployed.sankey import (
     _resolve_primary_mismatch,
     _should_fetch_timeline,
     build_sankey_flows,
+    format_all_flows,
     format_csv,
     format_flows,
     format_json,
@@ -525,3 +526,19 @@ def test_format_flows_dispatch() -> None:
 
     with pytest.raises(ValueError, match="Unsupported format 'xml'"):
         format_flows(flows, "xml")
+
+
+def test_format_all_flows() -> None:
+    flows = [SankeyFlow("Applied", "In Loop", 2)]
+    all_formats = format_all_flows(flows)
+
+    assert set(all_formats.keys()) == {
+        "sankey.txt",
+        "sankey.mmd",
+        "sankey.json",
+        "sankey.csv",
+    }
+    assert all_formats["sankey.txt"] == "Applied [2] In Loop"
+    assert "sankey-beta" in all_formats["sankey.mmd"]
+    assert '"source": "Applied"' in all_formats["sankey.json"]
+    assert "Applied,In Loop,2" in all_formats["sankey.csv"]

@@ -11,16 +11,6 @@ on:
         options:
           - 'applied'
           - 'full'
-      format:
-        description: 'Primary export file format'
-        type: choice
-        required: true
-        default: 'sankeymatic'
-        options:
-          - 'sankeymatic'
-          - 'mermaid'
-          - 'json'
-          - 'csv'
       stale_days:
         description: 'Days inactive before an open role is marked ghosted'
         type: string
@@ -60,26 +50,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           INPUT_SCOPE: ${{ inputs.scope }}
-          INPUT_FORMAT: ${{ inputs.format }}
           INPUT_STALE_DAYS: ${{ inputs.stale_days }}
           INPUT_START_DATE: ${{ inputs.start_date }}
           INPUT_END_DATE: ${{ inputs.end_date }}
         run: |
           set -e
-          case "$INPUT_FORMAT" in
-            sankeymatic) EXT="txt" ;;
-            mermaid) EXT="mmd" ;;
-            json) EXT="json" ;;
-            csv) EXT="csv" ;;
-            *) EXT="txt" ;;
-          esac
-          OUTPUT="sankey.${EXT}"
-          echo "output=$OUTPUT" >> "$GITHUB_OUTPUT"
+          OUTPUT_DIR="sankey-artifacts"
+          echo "output_dir=$OUTPUT_DIR" >> "$GITHUB_OUTPUT"
 
           ARGS=(
             "--scope" "$INPUT_SCOPE"
-            "--format" "$INPUT_FORMAT"
-            "--output" "$OUTPUT"
+            "--output-dir" "$OUTPUT_DIR"
             "--step-summary" "$GITHUB_STEP_SUMMARY"
           )
           if [ -n "${INPUT_STALE_DAYS:-}" ]; then
@@ -98,5 +79,5 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: sankey-diagram
-          path: ${{ steps.generate.outputs.output }}
+          path: ${{ steps.generate.outputs.output_dir }}
           if-no-files-found: error

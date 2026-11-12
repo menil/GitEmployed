@@ -576,3 +576,23 @@ def format_flows(flows: list[SankeyFlow], fmt: str) -> str:
         f"Unsupported format {fmt!r}. Expected one of: "
         "'sankeymatic', 'mermaid', 'json', 'csv'"
     )
+
+
+SANKEY_FORMAT_EXTENSIONS: dict[str, str] = {
+    "sankeymatic": "txt",
+    "mermaid": "mmd",
+    "json": "json",
+    "csv": "csv",
+}
+
+
+def format_all_flows(flows: list[SankeyFlow]) -> dict[str, str]:
+    """Format Sankey flows into all supported formats.
+
+    Returns:
+        Mapping of filename (e.g. 'sankey.txt') to formatted string content.
+    """
+    return {
+        f"sankey.{ext}": format_flows(flows, fmt)
+        for fmt, ext in SANKEY_FORMAT_EXTENSIONS.items()
+    }

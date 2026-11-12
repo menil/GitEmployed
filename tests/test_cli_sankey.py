@@ -182,3 +182,67 @@ def test_output_file_write_error(
     mock_write.side_effect = OSError("Disk full")
     run_main(argv=["sankey.py", "--output", "out.txt"], expected_code=1)
     assert "Failed to write output to out.txt" in caplog.text
+
+
+@patch("gitemployed.cli.sankey.generate_sankey_flows")
+@patch("gitemployed.cli.sankey.GitHubClient")
+def test_output_dir_generates_all_formats(
+    mock_client: MagicMock,
+    mock_generate: MagicMock,
+    tmp_path,
+) -> None:
+    mock_generate.return_value = [SankeyFlow("Applied", "In Loop", 5)]
+    out_dir = tmp_path / "sankey_out"
+
+    run_main(argv=["sankey.py", "--output-dir", str(out_dir)])
+
+    assert (out_dir / "sankey.txt").exists()
+    assert (out_dir / "sankey.mmd").exists()
+    assert (out_dir / "sankey.json").exists()
+    assert (out_dir / "sankey.csv").exists()
+
+    assert "Applied [5] In Loop" in (out_dir / "sankey.txt").read_text(encoding="utf-8")
+    assert "sankey-beta" in (out_dir / "sankey.mmd").read_text(encoding="utf-8")
+    assert '"source": "Applied"' in (out_dir / "sankey.json").read_text(
+        encoding="utf-8"
+    )
+    assert "Applied,In Loop,5" in (out_dir / "sankey.csv").read_text(encoding="utf-8")
+
+
+@patch("gitemployed.cli.sankey.generate_sankey_flows")
+@patch("gitemployed.cli.sankey.GitHubClient")
+def test_output_and_output_dir_mutually_exclusive(
+    mock_client: MagicMock,
+    mock_generate: MagicMock,
+) -> None:
+    run_main(
+        argv=["sankey.py", "--output", "out.txt", "--output-dir", "out_dir"],
+        expected_code=2,
+    )
+
+
+@patch("gitemployed.cli.sankey.generate_sankey_flows")
+@patch("gitemployed.cli.sankey.GitHubClient")
+def test_format_and_output_dir_mutually_exclusive(
+    mock_client: MagicMock,
+    mock_generate: MagicMock,
+) -> None:
+    run_main(
+        argv=["sankey.py", "--format", "csv", "--output-dir", "out_dir"],
+        expected_code=2,
+    )
+
+
+@patch("gitemployed.cli.sankey.generate_sankey_flows")
+@patch("gitemployed.cli.sankey.GitHubClient")
+@patch("pathlib.Path.write_text")
+def test_output_dir_write_error(
+    mock_write: MagicMock,
+    mock_client: MagicMock,
+    mock_generate: MagicMock,
+    caplog,
+) -> None:
+    mock_generate.return_value = [SankeyFlow("Applied", "In Loop", 5)]
+    mock_write.side_effect = OSError("Disk full")
+    run_main(argv=["sankey.py", "--output-dir", "out_dir"], expected_code=1)
+    assert "Failed to write output to out_dir" in caplog.text
