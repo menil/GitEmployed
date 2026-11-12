@@ -22,7 +22,7 @@ on:
           - 'json'
           - 'csv'
       stale_days:
-        description: 'Days inactive in "applied" to mark Ghosted / Stale'
+        description: 'Days inactive before an open role is marked ghosted'
         type: string
         required: false
         default: '30'

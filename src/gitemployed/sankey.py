@@ -31,6 +31,13 @@ TIMELINE_CANDIDATE_LABELS: frozenset[str] = frozenset(
     {"applied", "in-loop", "offer-received", "rejected"}
 )
 
+MILESTONE_RANK: dict[str, int] = {
+    "ready-to-apply": 1,
+    "applied": 2,
+    "in-loop": 3,
+    "offer-received": 4,
+}
+
 
 @dataclass(frozen=True)
 class SankeyFlow:
@@ -98,19 +105,58 @@ def _extract_issue_journey(
     created_at = _parse_iso(issue.get("created_at")) or now
     updated_at = _parse_iso(issue.get("updated_at")) or created_at
 
-    # Track which milestone labels were ever attached and earliest appearance
+    # Sort events chronologically to replay milestone transitions
+    sorted_events = sorted(
+        events,
+        key=lambda ev: _parse_iso(ev.get("created_at")) or now,
+    )
+
+    # Track milestone labels and earliest appearance, accounting for error
+    # corrections (e.g. moving backward from 'in-loop' to 'applied' invalidates
+    # downstream milestones like 'in-loop').
     milestone_dates: dict[str, dt.datetime] = {}
-    for ev in events:
+    for ev in sorted_events:
         if ev.get("event") == "labeled":
             lbl = ev.get("label")
             ev_time = _parse_iso(ev.get("created_at")) or now
-            if lbl and (lbl not in milestone_dates or ev_time < milestone_dates[lbl]):
+            if not lbl:
+                continue
+            if lbl in MILESTONE_RANK:
+                rank = MILESTONE_RANK[lbl]
+                # If reverting to an upstream stage, invalidate downstream milestones
+                stale = [
+                    m
+                    for m in milestone_dates
+                    if m in MILESTONE_RANK and MILESTONE_RANK[m] > rank
+                ]
+                for m in stale:
+                    del milestone_dates[m]
+                milestone_dates.pop("rejected", None)
+            elif lbl == "rejected":
+                pass
+            if lbl not in milestone_dates or ev_time < milestone_dates[lbl]:
                 milestone_dates[lbl] = ev_time
 
     # Also check current labels if events were empty
     for lbl in current_labels:
         if lbl not in milestone_dates:
             milestone_dates[lbl] = created_at
+
+    # Reconcile with current_labels: if the issue currently carries an upstream
+    # milestone (e.g. 'applied'), it cannot have reached a downstream stage
+    # (e.g. 'in-loop' or 'offer-received') — any such past event was an error.
+    current_milestones = [lbl for lbl in current_labels if lbl in MILESTONE_RANK]
+    if current_milestones and "rejected" not in current_labels:
+        current_max_rank = max(MILESTONE_RANK[lbl] for lbl in current_milestones)
+        stale = [
+            m
+            for m in milestone_dates
+            if m in MILESTONE_RANK and MILESTONE_RANK[m] > current_max_rank
+        ]
+        for m in stale:
+            del milestone_dates[m]
+        if is_open:
+            milestone_dates.pop("rejected", None)
 
     reached_in_loop = "in-loop" in milestone_dates
     has_offer = "offer-received" in milestone_dates
@@ -166,10 +212,10 @@ def _extract_issue_journey(
         if has_offer:
             path.append("Offer Received")
         elif has_rejected:
-            path.append("Rejected")
+            path.append("Rejected after Interview Loop")
         elif is_open:
             if is_stale:
-                path.append("Loop Stale")
+                path.append("Ghosted after Interview Loop")
             else:
                 path.append("Interviewing (Active)")
         else:
@@ -178,14 +224,14 @@ def _extract_issue_journey(
         if has_offer:
             path.append("Offer Received")
         elif has_rejected:
-            path.append("Rejected")
+            path.append("Rejected after Application")
         elif is_open:
             if is_stale:
-                path.append("Ghosted / Stale")
+                path.append("Ghosted after Application")
             else:
                 path.append("Awaiting Response (Active)")
         else:
-            path.append("Ghosted / Stale")
+            path.append("Ghosted after Application")
 
     return applied_date, path
 

@@ -132,7 +132,7 @@ def _parse_args() -> argparse.Namespace:
         "--stale-days",
         type=_parse_positive_int,
         default=30,
-        help="Days of inactivity before an open role is marked 'Ghosted / Stale'.",
+        help="Days of inactivity before an open role is marked ghosted.",
     )
     parser.add_argument(
         "--start-date",

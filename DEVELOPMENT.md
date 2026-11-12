@@ -107,13 +107,13 @@ To run it: open the **Actions** tab, select **Job Search Sankey**, click
 
 - **scope** (`applied`/`full`):
   - `applied` (default): Traditional job hunt funnel starting at submitted
-    applications (`Applied -> In Loop -> Offer / Rejected`, plus
-    awaiting response and ghosted roles).
+    applications (`Applied -> In Loop -> Offer Received`, plus distinguished
+    stages for rejections, ghosting, and active roles).
   - `full`: Entire GitEmployed lifecycle starting at discovery
     (`Discovered Roles -> Mismatched / Triage Pending -> Ready to Apply -> Applied...`).
 - **format** (`sankeymatic`/`mermaid`/`json`/`csv`): Primary export format.
-- **stale_days**: Number of days of inactivity before an open role in `applied`
-  is categorized as `Ghosted / Stale` (default: `30`).
+- **stale_days**: Number of days of inactivity before an open role
+  is categorized as ghosted (default: `30`).
 - **start_date** / **end_date** (`YYYY-MM-DD`, optional): Date bounds for
   filtering applications.
 
