@@ -13,6 +13,7 @@ from gitemployed.schema import (
     Resume,
     Settings,
     ValidationError,
+    Work,
     theme_looks_pinned,
 )
 
@@ -1294,3 +1295,149 @@ def test_settings_stale_cleanup_validation() -> None:
     # Explicit None falls back to default None
     s_limit = Settings.from_dict({"stale_cleanup": {"limit": None}})
     assert s_limit.stale_cleanup.limit is None
+
+
+def test_resume_preserves_work_description_location_and_extra_fields() -> None:
+    """Round-tripping Resume preserves work.description and extra fields."""
+    raw = {
+        "$schema": "https://jsonresume.org/schema",
+        "basics": {
+            "name": "Jane Doe",
+            "image": "https://example.com/avatar.png",
+            "location": {
+                "city": "Seattle",
+                "region": "WA",
+                "countryCode": "US",
+                "postalCode": "98101",
+            },
+            "profiles": [
+                {
+                    "network": "GitHub",
+                    "url": "https://github.com/janedoe",
+                    "customTag": "oss",
+                }
+            ],
+        },
+        "work": [
+            {
+                "name": "Whitepages",
+                "location": "Seattle, WA",
+                "description": "A high-volume data platform.",
+                "position": "Principal Software Engineer",
+                "startDate": "2020",
+                "endDate": "2026",
+                "highlights": ["Built things"],
+                "department": "Data",
+            }
+        ],
+        "education": [
+            {
+                "institution": "Tel Aviv University",
+                "studyType": "B.Sc.",
+                "area": "Computer Science",
+                "honors": "Cum Laude",
+            }
+        ],
+        "skills": [
+            {
+                "name": "Languages",
+                "level": "Master",
+                "keywords": ["Python"],
+            }
+        ],
+        "projects": [
+            {
+                "name": "GitEmployed",
+                "roles": ["Creator"],
+            }
+        ],
+        "languages": [{"language": "English", "fluency": "Native"}],
+    }
+
+    resume = Resume.from_dict(raw)
+    assert resume.work[0].description == "A high-volume data platform."
+    assert resume.work[0].location == "Seattle, WA"
+
+    dumped = resume.to_dict(include_empty_arrays=False)
+    assert dumped["$schema"] == raw["$schema"]
+    assert dumped["basics"]["image"] == "https://example.com/avatar.png"
+    assert dumped["basics"]["location"]["postalCode"] == "98101"
+    assert dumped["basics"]["profiles"][0]["customTag"] == "oss"
+    assert dumped["work"][0]["description"] == "A high-volume data platform."
+    assert dumped["work"][0]["location"] == "Seattle, WA"
+    assert dumped["work"][0]["department"] == "Data"
+    assert dumped["education"][0]["honors"] == "Cum Laude"
+    assert dumped["skills"][0]["level"] == "Master"
+    assert dumped["projects"][0]["roles"] == ["Creator"]
+    assert dumped["languages"] == [{"language": "English", "fluency": "Native"}]
+
+
+def test_work_optional_fields_omitted_when_none_and_reject_invalid_types() -> None:
+    """Work.location and Work.description omit None and reject non-scalar values."""
+    work = Work.from_dict({"name": "Acme", "position": "Engineer"})
+    dumped = work.to_dict(include_empty_arrays=False)
+    assert "location" not in dumped
+    assert "description" not in dumped
+
+    for bad in ({"nested": "dict"}, ["list"], True):
+        with pytest.raises(ValidationError, match=r"work\.location"):
+            Work.from_dict({"name": "Acme", "position": "Dev", "location": bad})
+        with pytest.raises(ValidationError, match=r"work\.description"):
+            Work.from_dict({"name": "Acme", "position": "Dev", "description": bad})
+
+
+def test_snake_case_keys_do_not_collide_in_from_dict() -> None:
+    """Snake-case keys in input dicts do not collide with model_fields."""
+    resume = Resume.from_dict(
+        {
+            "basics": {"name": "Jane Doe"},
+            "work": [
+                {
+                    "name": "Acme",
+                    "position": "Engineer",
+                    "start_date": "ignored-when-camel-used",
+                    "startDate": "2020",
+                    "end_date": "2024",
+                }
+            ],
+            "education": [
+                {
+                    "institution": "University",
+                    "study_type": "B.S.",
+                    "start_date": "2016",
+                    "end_date": "2020",
+                }
+            ],
+            "projects": [
+                {
+                    "name": "Tool",
+                    "start_date": "2021",
+                    "end_date": "2022",
+                }
+            ],
+        }
+    )
+    assert resume.work[0].start_date == "2020"
+    dumped = resume.to_dict(include_empty_arrays=False)
+    assert "start_date" not in dumped["work"][0]
+    assert "end_date" not in dumped["work"][0]
+    assert "study_type" not in dumped["education"][0]
+    assert "start_date" not in dumped["projects"][0]
+
+
+def test_extra_fields_preserve_falsy_and_deepcopy_mutable() -> None:
+    """Falsy extra values are preserved and mutable extras are deep-copied."""
+    resume = Resume.from_dict(
+        {
+            "basics": {"name": "Jane Doe", "flag": False, "count": 0, "empty": None},
+            "tags": ["a", "b"],
+        }
+    )
+    dumped = resume.to_dict(include_empty_arrays=False)
+    assert dumped["basics"]["flag"] is False
+    assert dumped["basics"]["count"] == 0
+    assert dumped["basics"]["empty"] is None
+
+    # Mutating dumped output must not mutate the model's stored extra.
+    dumped["tags"].append("c")
+    assert resume.to_dict(include_empty_arrays=False)["tags"] == ["a", "b"]

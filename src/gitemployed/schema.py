@@ -1,5 +1,6 @@
 """Data schemas and dataclasses for GitEmployed."""
 
+import copy
 import datetime
 import re
 from typing import Any, ClassVar
@@ -669,10 +670,39 @@ class Settings(BaseModel):
 # --- JSON Resume Schema Pydantic Models ---
 
 
-class Location(BaseModel):
+class _JsonResumeModel(BaseModel):
+    """Base for JSON Resume models that preserves unmodeled fields across round-trips.
+
+    Uses ``extra="allow"`` so official JSON Resume fields we don't explicitly
+    model (e.g. ``volunteer``, ``languages``, ``basics.image``) and custom
+    keys survive ``from_dict()`` -> ``to_dict()`` intact.
+    """
+
+    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
+
+    # Input keys that map to differently named Python fields (e.g. camelCase
+    # JSON Resume keys) so they are neither duplicated in model_extra nor
+    # passed twice when unpacking extras into cls(...).
+    _ALIASES: ClassVar[frozenset[str]] = frozenset()
+
+    @classmethod
+    def _extra_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
+        """Return keys from ``data`` not already handled by model fields or aliases."""
+        excluded = cls.model_fields.keys() | cls._ALIASES
+        return {k: v for k, v in data.items() if k not in excluded}
+
+    def _merge_extras(self, res: dict[str, Any]) -> dict[str, Any]:
+        """Merge preserved extra fields into ``res`` without overwriting known keys."""
+        if self.model_extra:
+            for k, v in self.model_extra.items():
+                res.setdefault(k, copy.deepcopy(v))
+        return res
+
+
+class Location(_JsonResumeModel):
     """Location information for JSON Resume."""
 
-    model_config = ConfigDict(extra="ignore", arbitrary_types_allowed=True)
+    _ALIASES: ClassVar[frozenset[str]] = frozenset({"region", "countryCode"})
 
     city: str | None = None
     state: str | None = None
@@ -700,6 +730,7 @@ class Location(BaseModel):
             city=city,
             state=state,
             country_code=country_code,
+            **cls._extra_fields(data),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -711,13 +742,11 @@ class Location(BaseModel):
             res["region"] = self.state
         if self.country_code is not None:
             res["countryCode"] = self.country_code
-        return res
+        return self._merge_extras(res)
 
 
-class Profile(BaseModel):
+class Profile(_JsonResumeModel):
     """Social profiles (GitHub, LinkedIn) for JSON Resume."""
-
-    model_config = ConfigDict(extra="ignore", arbitrary_types_allowed=True)
 
     network: str
     username: str | None = None
@@ -737,6 +766,7 @@ class Profile(BaseModel):
             network=network,
             username=_parse_str("profile.username", data.get("username")),
             url=_parse_str("profile.url", data.get("url")),
+            **cls._extra_fields(data),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -748,7 +778,7 @@ class Profile(BaseModel):
             res["username"] = self.username
         if self.url is not None:
             res["url"] = self.url
-        return res
+        return self._merge_extras(res)
 
 
 def _set_array(
@@ -765,10 +795,8 @@ def _set_array(
         res[key] = items
 
 
-class Basics(BaseModel):
+class Basics(_JsonResumeModel):
     """Basic profile information for JSON Resume."""
-
-    model_config = ConfigDict(extra="ignore", arbitrary_types_allowed=True)
 
     name: str
     label: str | None = None
@@ -809,6 +837,7 @@ class Basics(BaseModel):
                 summary=_parse_str("basics.summary", data.get("summary")),
                 location=location,
                 profiles=profiles,
+                **cls._extra_fields(data),
             )
         except (ValueError, TypeError, ValidationError) as e:
             raise ValidationError(f"Failed to parse Basics: {e}") from e
@@ -853,15 +882,17 @@ class Basics(BaseModel):
             [p.to_dict() if hasattr(p, "to_dict") else p for p in self.profiles],
             include_empty_arrays=include_empty_arrays,
         )
-        return res
+        return self._merge_extras(res)
 
 
-class Work(BaseModel):
+class Work(_JsonResumeModel):
     """Professional work experience entry for JSON Resume."""
 
-    model_config = ConfigDict(extra="ignore", arbitrary_types_allowed=True)
+    _ALIASES: ClassVar[frozenset[str]] = frozenset({"startDate", "endDate"})
 
     name: str
+    location: str | None = None
+    description: str | None = None
     position: str
     url: str | None = None
     start_date: str | None = None
@@ -895,12 +926,15 @@ class Work(BaseModel):
 
             return cls(
                 name=name,
+                location=_parse_str("work.location", data.get("location")),
+                description=_parse_str("work.description", data.get("description")),
                 position=position,
                 url=_parse_str("work.url", data.get("url")),
                 start_date=_parse_str("work.start_date", data.get("startDate")),
                 end_date=_parse_str("work.end_date", data.get("endDate")),
                 summary=_parse_str("work.summary", data.get("summary")),
                 highlights=highlights,
+                **cls._extra_fields(data),
             )
         except (ValueError, TypeError, ValidationError) as e:
             raise ValidationError(f"Failed to parse Work: {e}") from e
@@ -912,8 +946,13 @@ class Work(BaseModel):
         """
         res: dict[str, Any] = {
             "name": self.name,
-            "position": self.position,
         }
+        # Emit location/description before position to match JSON Resume schema order.
+        if self.location is not None:
+            res["location"] = self.location
+        if self.description is not None:
+            res["description"] = self.description
+        res["position"] = self.position
         if self.url is not None:
             res["url"] = self.url
         if self.start_date is not None:
@@ -928,13 +967,15 @@ class Work(BaseModel):
             self.highlights,
             include_empty_arrays=include_empty_arrays,
         )
-        return res
+        return self._merge_extras(res)
 
 
-class Education(BaseModel):
+class Education(_JsonResumeModel):
     """Education history entry for JSON Resume."""
 
-    model_config = ConfigDict(extra="ignore", arbitrary_types_allowed=True)
+    _ALIASES: ClassVar[frozenset[str]] = frozenset(
+        {"studyType", "startDate", "endDate"}
+    )
 
     institution: str
     url: str | None = None
@@ -976,6 +1017,7 @@ class Education(BaseModel):
                 end_date=_parse_str("education.end_date", data.get("endDate")),
                 score=_parse_str("education.score", data.get("score")),
                 courses=courses,
+                **cls._extra_fields(data),
             )
         except (ValueError, TypeError, ValidationError) as e:
             raise ValidationError(f"Failed to parse Education: {e}") from e
@@ -1003,13 +1045,11 @@ class Education(BaseModel):
         _set_array(
             res, "courses", self.courses, include_empty_arrays=include_empty_arrays
         )
-        return res
+        return self._merge_extras(res)
 
 
-class Skill(BaseModel):
+class Skill(_JsonResumeModel):
     """Professional skills entry for JSON Resume."""
-
-    model_config = ConfigDict(extra="ignore", arbitrary_types_allowed=True)
 
     name: str
     keywords: list[str] = Field(default_factory=list)
@@ -1034,7 +1074,11 @@ class Skill(BaseModel):
                 raise ValidationError("skill.keywords must be a list of strings.")
             keywords = keywords_raw
 
-            return cls(name=name, keywords=keywords)
+            return cls(
+                name=name,
+                keywords=keywords,
+                **cls._extra_fields(data),
+            )
         except (ValueError, TypeError, ValidationError) as e:
             raise ValidationError(f"Failed to parse Skill: {e}") from e
 
@@ -1049,13 +1093,13 @@ class Skill(BaseModel):
         _set_array(
             res, "keywords", self.keywords, include_empty_arrays=include_empty_arrays
         )
-        return res
+        return self._merge_extras(res)
 
 
-class Project(BaseModel):
+class Project(_JsonResumeModel):
     """Personal or professional project entry for JSON Resume."""
 
-    model_config = ConfigDict(extra="ignore", arbitrary_types_allowed=True)
+    _ALIASES: ClassVar[frozenset[str]] = frozenset({"startDate", "endDate"})
 
     name: str
     description: str | None = None
@@ -1102,6 +1146,7 @@ class Project(BaseModel):
                 start_date=_parse_str("project.start_date", data.get("startDate")),
                 end_date=_parse_str("project.end_date", data.get("endDate")),
                 url=_parse_str("project.url", data.get("url")),
+                **cls._extra_fields(data),
             )
         except (ValueError, TypeError, ValidationError) as e:
             raise ValidationError(f"Failed to parse Project: {e}") from e
@@ -1131,13 +1176,11 @@ class Project(BaseModel):
             res["endDate"] = self.end_date
         if self.url is not None:
             res["url"] = self.url
-        return res
+        return self._merge_extras(res)
 
 
-class Resume(BaseModel):
+class Resume(_JsonResumeModel):
     """Full resume conforming to JSON Resume schema conventions."""
-
-    model_config = ConfigDict(extra="ignore", arbitrary_types_allowed=True)
 
     basics: Basics
     work: list[Work] = Field(default_factory=list)
@@ -1200,6 +1243,7 @@ class Resume(BaseModel):
                 skills=skills,
                 projects=projects,
                 meta=meta,
+                **cls._extra_fields(data),
             )
         except (ValueError, TypeError, ValidationError) as e:
             raise ValidationError(f"Failed to parse Resume: {e}") from e
@@ -1251,4 +1295,4 @@ class Resume(BaseModel):
         )
         if self.meta is not None:
             res["meta"] = self.meta
-        return res
+        return self._merge_extras(res)
