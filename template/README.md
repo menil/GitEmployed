@@ -76,7 +76,7 @@ Configure these under the **Variables** tab:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LLM_PROVIDER` | *auto-detected* | `gemini`, `openrouter`, or `claude` (auto-detected from keys when unset) |
+| `LLM_PROVIDER` | *auto-detected* | `gemini`, `openrouter`, or `claude` (when unset, auto-detected from keys in order: `GEMINI_API_KEY` → `OPENROUTER_API_KEY` → `CLAUDE_CODE_OAUTH_TOKEN`) |
 | `OPENROUTER_MODEL` | `openrouter/free` | OpenRouter model (requires provider prefix, e.g., `openrouter/free` or `google/gemini-3.8-flash`). |
 | `GEMINI_MODEL` | `models/gemini-3.8-flash` | Gemini model (e.g., `models/gemini-3.8-flash` or `gemini-3.8-flash`) |
 | `CLAUDE_MODEL` | `claude-sonnet-5` | Claude model (e.g., `claude-sonnet-5` or `claude-haiku-4-5-20251001`) |
