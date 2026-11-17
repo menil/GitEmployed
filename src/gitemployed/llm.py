@@ -1397,6 +1397,12 @@ def _get_model_name(env_var: str, default_val: str) -> str:
 def get_llm_client(model: str | None = None) -> LLMClient:
     """Instantiate pluggable LLM client based on environment variables.
 
+    When ``LLM_PROVIDER`` is unset or blank, the provider is auto-detected from
+    configured credentials in precedence order: ``GEMINI_API_KEY`` ->
+    ``OPENROUTER_API_KEY`` -> Claude (checked in order:
+    ``CLAUDE_CODE_OAUTH_TOKEN``, ``CLAUDE_API_KEY``, ``ANTHROPIC_API_KEY``).
+    Set ``LLM_PROVIDER`` explicitly when multiple keys are configured.
+
     Args:
         model: Optional model-name override (spec 8.1). When provided it wins
             over the ``GEMINI_MODEL`` / ``OPENROUTER_MODEL`` / ``CLAUDE_MODEL``
