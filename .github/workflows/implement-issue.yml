@@ -1,0 +1,71 @@
+# Lets a maintainer ask for an issue to be assessed and, if it is real and reproducible,
+# fixed as a pull request, ready for review, by the shared workflow of
+# menil/issue-and-pr-agent-actions (called by @v1, the latest 1.x release). Read "Issue
+# implementation" in that repository's README first. It needs the repository setting "Allow
+# GitHub Actions to create and approve pull requests", it uses the Claude subscription token,
+# and the model only ever runs the commands named below.
+#
+# It starts only when someone with write access applies the ready-to-implement label. To
+# have a maintainer's own new issues worked on automatically, set the repository variable
+# AGENT_AUTO to true; it is off. Add the no-agent label to keep the agent off an issue.
+#
+# The jobs, the guard and what each job may touch are in that shared workflow, so this file
+# changes only for this repository's own settings. To hold a fixed version instead of @v1, call
+# the full commit of a release, with the release in a comment; Dependabot can then bump it.
+name: Implement issue
+
+on:
+  issues:
+    types: [opened, labeled]
+
+# Nothing by default; the one job below asks for what the jobs it calls need between them.
+permissions: {}
+
+# One run per issue, queued and never cancelled halfway.
+concurrency:
+  group: implement-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    # The most the called jobs need between them. Each of them asks for less, and none asks
+    # for `workflows`.
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    uses: menil/issue-and-pr-agent-actions/.github/workflows/implement.yml@v1
+    with:
+      agent_auto: ${{ vars.AGENT_AUTO }}
+      daily_cap: ${{ vars.AGENT_DAILY_CAP }}
+      # ci.yml runs the checks in a prebuilt image; this installs the same tools on the runner
+      # (uv with the project's Python, just, shellcheck, and the installer's Node packages).
+      setup_command: |
+        pipx install uv==0.11.25
+        pipx install rust-just==1.55.1
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        export PATH="$HOME/.local/bin:$PATH"
+        command -v shellcheck >/dev/null || sudo apt-get install -y --no-install-recommends shellcheck
+        uv sync --frozen
+        echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+        npm ci --prefix installer
+      # The tests. pytest takes a file or a test id, so the model can run only what it wrote.
+      assess_command_tools: "Bash(pytest:*)"
+      # The tests, and the full check (lint, shellcheck, format, tests with the coverage floor,
+      # and the installer's tests), so a change can be made to pass what validation will ask.
+      fix_command_tools: "Bash(pytest:*),Bash(just validate)"
+      repository_notes: |
+        GitEmployed automates a job search on GitHub. The Python code is in src/gitemployed/
+        and its tests are in tests/; a TypeScript installer is in installer/. Follow AGENTS.md,
+        which gives the project's conventions and the guards that must not be weakened. Run the
+        Python tests with `pytest` (name a file, as in `pytest tests/test_respond.py`).
+      fix_repository_notes: |
+        GitEmployed automates a job search on GitHub. The Python code is in src/gitemployed/
+        and its tests are in tests/; a TypeScript installer is in installer/. Follow AGENTS.md,
+        which gives the project's conventions and the guards that must not be weakened. Run the
+        Python tests with `pytest` (name a file, as in `pytest tests/test_respond.py`) and the
+        full check with `just validate`. Add a regression test next to the existing ones for any
+        behaviour you change, and keep the coverage the tests enforce.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

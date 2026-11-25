@@ -1,0 +1,30 @@
+name: Issue Triage
+
+# Labels a newly opened issue and, when the report is too thin to act on, asks once for
+# what is missing. It never closes, assigns or prioritises anything. Only the two
+# provider secrets below are handed to it.
+# https://github.com/menil/issue-and-pr-agent-actions#issue-triage
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+  contents: read
+
+# One run per issue, and a second one never cancels the first halfway through.
+concurrency:
+  group: issue-triage-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Triage the issue
+        uses: menil/issue-and-pr-agent-actions/triage@v1
+        with:
+          # Tried first; OpenRouter's free models are the fallback.
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
