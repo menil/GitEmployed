@@ -519,6 +519,52 @@ def test_transition_from_closed_event_payload_with_duplicate(
     mock_client.add_labels.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("state_reason", "expected_status", "expected_labels"),
+    [
+        ("duplicate", "Mismatched/Closed", {"duplicate"}),
+        ("not_planned", "Rejected", {"rejected"}),
+        ("completed", "Rejected", {"rejected"}),
+        (None, "Rejected", {"rejected"}),
+    ],
+)
+@patch("gitemployed.cli.status_transition.GitHubClient")
+def test_transition_from_closed_event_state_reason(
+    mock_github_client_class, state_reason, expected_status, expected_labels
+) -> None:
+    """Only a duplicate close reason changes how an unlabeled close resolves."""
+    mock_client = MagicMock()
+    mock_github_client_class.return_value = mock_client
+    # Stateful labels: the lifecycle sync re-reads them after any earlier write.
+    labels = {"ready-to-apply"}
+    mock_client.get_labels.side_effect = lambda _number: list(labels)
+    mock_client.add_labels.side_effect = lambda _number, added: labels.update(added)
+    mock_client.remove_label.side_effect = lambda _number, name: labels.discard(name)
+
+    event_data = {
+        "action": "closed",
+        "issue": {
+            "number": 103,
+            "node_id": "ND_EVENT_103",
+            "state_reason": state_reason,
+            "labels": [{"name": "ready-to-apply"}],
+        },
+        "repository": {"full_name": "event_owner/event_repo"},
+    }
+
+    with (
+        in_memory_event(event_data),
+        patch.dict(os.environ, {"GITHUB_TOKEN": "test_token"}, clear=True),
+        patch("sys.argv", ["status_transition.py", "--event-path", "event.json"]),
+    ):
+        main()
+
+    mock_client.update_project_status.assert_called_once_with(
+        "ND_EVENT_103", expected_status
+    )
+    assert labels == expected_labels
+
+
 @patch("gitemployed.cli.status_transition.GitHubClient")
 def test_transition_from_labeled_duplicate_event_payload(
     mock_github_client_class,

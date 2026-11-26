@@ -16,6 +16,7 @@ from gitemployed.schema import ProjectsV2Config
 from gitemployed.status_model import (
     CLOSED_MISMATCH_REASON_LABELS,
     CLOSURE_LABELS,
+    DUPLICATE_LABEL,
     LABEL_TO_STATUS,
     resolve_closed_lifecycle_label,
     sync_lifecycle_label,
@@ -42,6 +43,8 @@ class TransitionContext:
     # while the issue is still open); False for 'closed' events, where GitHub
     # has already flipped the state and re-closing would be a wasted write.
     closes_issue: bool = False
+    # True for a duplicate close reason with no matching label yet.
+    adds_duplicate_label: bool = False
 
 
 def main() -> None:
@@ -136,12 +139,11 @@ def _resolve_label(event: dict[str, Any], cli_label: str | None) -> str:
     if not raw_label:
         if event.get("action") == "closed":
             issue_data = event.get("issue") or {}
-            labels_list = issue_data.get("labels") or []
-            current_labels = {
-                label_dict.get("name")
-                for label_dict in labels_list
-                if isinstance(label_dict, dict) and label_dict.get("name")
-            }
+            current_labels = _payload_label_names(issue_data)
+            # "Close as duplicate" in the UI sets the close reason but adds no
+            # label, so it would otherwise fall through to 'rejected'.
+            if issue_data.get("state_reason") == "duplicate":
+                current_labels.add(DUPLICATE_LABEL)
             raw_label = resolve_closed_lifecycle_label(current_labels)
         elif isinstance(event.get("label"), dict):
             raw_label = event["label"].get("name")
@@ -158,6 +160,15 @@ def _resolve_label(event: dict[str, Any], cli_label: str | None) -> str:
         )
         sys.exit(1)
     return resolved_label
+
+
+def _payload_label_names(issue_data: dict[str, Any]) -> set[str]:
+    """Return the label names carried by a webhook payload's issue."""
+    return {
+        label_dict.get("name")
+        for label_dict in issue_data.get("labels") or []
+        if isinstance(label_dict, dict) and label_dict.get("name")
+    }
 
 
 def _resolve_context(
@@ -217,6 +228,14 @@ def _resolve_context(
         status=LABEL_TO_STATUS[label],
         is_closure=is_closed_event or label in CLOSURE_LABELS,
         closes_issue=label in CLOSURE_LABELS and not is_closed_event,
+        # An explicit --label can override the close reason, so only add the
+        # label when the run actually resolved to a mismatch.
+        adds_duplicate_label=(
+            is_closed_event
+            and label == "triage-mismatched"
+            and issue_data.get("state_reason") == "duplicate"
+            and DUPLICATE_LABEL not in _payload_label_names(issue_data)
+        ),
     )
 
 
@@ -252,6 +271,10 @@ def _transition(gh_client: GitHubClient, context: TransitionContext) -> None:
         context.status,
     )
     try:
+        # Add before the lifecycle sync, which skips the generic
+        # 'triage-mismatched' label once a specific reason label is present.
+        if context.adds_duplicate_label:
+            gh_client.add_labels(context.issue_number, [DUPLICATE_LABEL])
         # The lifecycle label that triggered this workflow is the source of
         # truth; drop stale sibling lifecycle labels so the issue carries a
         # single pipeline stage and the board matches the label state.
