@@ -838,6 +838,9 @@ def test_handle_opened_event_fetch_failure_posts_comment() -> None:
         patch(
             "gitemployed.cli.respond.triage.post_fetch_failure_comment"
         ) as mocked_comment,
+        patch(
+            "gitemployed.cli.respond.triage.flag_needs_description"
+        ) as mocked_flag,
     ):
         respond.handle_opened_event(
             opened_event(),
@@ -849,6 +852,8 @@ def test_handle_opened_event_fetch_failure_posts_comment() -> None:
             repo_path=Path(),
         )
         mocked_fetch.assert_called_once()
+        mocked_flag.assert_called_once()
+        assert mocked_flag.call_args.args[:2] == (6, gh)
         mocked_comment.assert_called_once_with(
             6, gh, "https://careers.acme.com/jobs/123", "blocked by bot"
         )

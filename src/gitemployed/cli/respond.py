@@ -661,6 +661,7 @@ def handle_opened_event(
         page = triage.fetch_job_page(url, web_client)
     except triage.JobFetchError as e:
         logger.warning("Could not fetch job posting for issue #%d: %s", issue_number, e)
+        triage.flag_needs_description(issue_number, gh_client, labels)
         triage.post_fetch_failure_comment(issue_number, gh_client, url, str(e))
         return
 
